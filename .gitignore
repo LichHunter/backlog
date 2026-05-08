@@ -53,3 +53,8 @@ backlog.md
 backups/
 design/
 stats.jsonl
+
+# Pre-commit nix generated
+.pre-commit-config.yaml
+
+.direnv
