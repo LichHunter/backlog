@@ -244,7 +244,7 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [], i
                 className="text-input"
                 value={projectPath}
                 onChange={(e) => setProjectPath(e.target.value)}
-                placeholder="~/Code/myproject/backlog.md"
+                placeholder="/home/user/project/backlog.md"
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
               />
             </div>
