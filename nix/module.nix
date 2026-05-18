@@ -28,7 +28,7 @@ in
     };
 
     dataDir = lib.mkOption {
-      type = lib.types.path;
+      type = lib.types.str;
       default = "/var/lib/personal-backlog";
       description = "Directory to store backlog data.";
     };
@@ -67,17 +67,21 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
 
+      preStart = lib.mkIf (!isDefaultUser) ''
+        mkdir -p ${cfg.dataDir}
+      '';
+
       serviceConfig = {
         Type = "simple";
         User = cfg.user;
         Group = cfg.group;
-        WorkingDirectory = cfg.dataDir;
         ExecStart = "${cfg.package}/bin/personal-backlog --port ${toString cfg.port} --dir ${cfg.dataDir}";
         Restart = "on-failure";
         RestartSec = 5;
 
         StateDirectory = lib.mkIf isDefaultUser "personal-backlog";
         StateDirectoryMode = lib.mkIf isDefaultUser "0750";
+        WorkingDirectory = lib.mkIf isDefaultUser cfg.dataDir;
 
         NoNewPrivileges = true;
         ProtectSystem = lib.mkIf isDefaultUser "strict";
