@@ -310,6 +310,20 @@ def unregister_project(name: str, delete_file: bool = False) -> dict:
     return {"ok": True, "deleted": False}
 
 
+def auto_register_default_project():
+    registry = CONFIG.load_registry()
+    if registry:
+        return
+    
+    if not CONFIG.master.exists():
+        return
+    
+    master_path = str(CONFIG.master.resolve())
+    registry["default"] = {"path": master_path, "name": "default"}
+    CONFIG.save_registry(registry)
+    print(f"[init] Auto-registered default project: {master_path}")
+
+
 def list_registered_projects() -> list:
     registry = CONFIG.load_registry()
     projects = []
@@ -720,6 +734,8 @@ def main():
             blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
             CONFIG.master.write_text(blank, encoding="utf-8")
             print(f"[init] Created blank {CONFIG.master}")
+        
+        auto_register_default_project()
 
     server = HTTPServer(("0.0.0.0", args.port), Handler)
     print(f"[server] Listening on http://0.0.0.0:{args.port}")
