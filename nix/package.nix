@@ -26,7 +26,8 @@ stdenv.mkDerivation {
     cp -r webapp $out/share/personal-backlog/
 
     makeWrapper ${python3}/bin/python3 $out/bin/personal-backlog \
-      --add-flags "$out/share/personal-backlog/server.py"
+      --add-flags "$out/share/personal-backlog/server.py" \
+      --add-flags "--web-dir $out/share/personal-backlog/webapp"
 
     runHook postInstall
   '';
