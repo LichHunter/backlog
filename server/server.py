@@ -26,12 +26,24 @@ class Config:
         self.master = self.dir / "backlog.md"
         self.backups_dir = self.dir / "backups"
         self.stats_file = self.dir / "stats.jsonl"
+        self.registry_file = self.dir / "projects.json"
         self.web_dir = web_dir.resolve() if web_dir else Path(__file__).parent.parent / "webapp"
 
     def ensure_dirs(self):
         self.dir.mkdir(parents=True, exist_ok=True)
         if not self.workspace:
             self.backups_dir.mkdir(exist_ok=True)
+
+    def load_registry(self) -> dict:
+        if not self.registry_file.exists():
+            return {}
+        try:
+            return json.loads(self.registry_file.read_text(encoding="utf-8"))
+        except:
+            return {}
+
+    def save_registry(self, registry: dict):
+        self.registry_file.write_text(json.dumps(registry, indent=2), encoding="utf-8")
 
     def get_project_dir(self, project_name: str) -> Path:
         return self.dir / project_name
@@ -252,6 +264,108 @@ def create_project(name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Registry-based project management (multi-project mode with arbitrary paths)
+# ---------------------------------------------------------------------------
+
+def register_project(file_path: str, name: str = None) -> dict:
+    path = Path(file_path).expanduser().resolve()
+    if not path.name.endswith(".md"):
+        return {"ok": False, "error": "File must be a .md file"}
+    
+    project_name = name or path.parent.name
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '-', project_name.strip())
+    if not safe_name:
+        return {"ok": False, "error": "Invalid project name"}
+    
+    registry = CONFIG.load_registry()
+    if safe_name in registry:
+        return {"ok": False, "error": f"Project '{safe_name}' already registered"}
+    
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
+        path.write_text(blank, encoding="utf-8")
+    
+    registry[safe_name] = {"path": str(path), "name": safe_name}
+    CONFIG.save_registry(registry)
+    return {"ok": True, "name": safe_name, "path": str(path)}
+
+
+def unregister_project(name: str, delete_file: bool = False) -> dict:
+    registry = CONFIG.load_registry()
+    if name not in registry:
+        return {"ok": False, "error": f"Project '{name}' not found"}
+    
+    file_path = Path(registry[name]["path"])
+    del registry[name]
+    CONFIG.save_registry(registry)
+    
+    if delete_file and file_path.exists():
+        try:
+            file_path.unlink()
+            return {"ok": True, "deleted": True}
+        except Exception as e:
+            return {"ok": True, "deleted": False, "warning": f"Could not delete file: {e}"}
+    
+    return {"ok": True, "deleted": False}
+
+
+def list_registered_projects() -> list:
+    registry = CONFIG.load_registry()
+    projects = []
+    for name, info in registry.items():
+        path = Path(info["path"])
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            _, _, meta = parse_markdown_sections(text)
+            projects.append({
+                "name": name,
+                "path": str(path),
+                "size": len(text.encode("utf-8")),
+                "checksum": meta["checksum"] if meta else "",
+            })
+        else:
+            projects.append({"name": name, "path": str(path), "size": 0, "checksum": "", "missing": True})
+    return projects
+
+
+def read_registered_project(name: str) -> dict:
+    registry = CONFIG.load_registry()
+    if name not in registry:
+        return {"error": f"Project '{name}' not found"}
+    path = Path(registry[name]["path"])
+    if not path.exists():
+        return {"error": f"File not found: {path}"}
+    text = path.read_text(encoding="utf-8")
+    _, _, meta = parse_markdown_sections(text)
+    return {"content": text, "checksum": meta["checksum"] if meta else "", "size": len(text.encode("utf-8"))}
+
+
+def write_registered_project(name: str, content: str) -> dict:
+    registry = CONFIG.load_registry()
+    if name not in registry:
+        return {"ok": False, "error": f"Project '{name}' not found"}
+    path = Path(registry[name]["path"])
+    backup_dir = path.parent / "backups"
+    backup_dir.mkdir(exist_ok=True)
+    
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    millis = datetime.now(timezone.utc).strftime("%f")[:3]
+    backup_name = f"backlog_{timestamp}-{millis}.md"
+    backup_path = backup_dir / backup_name
+    
+    if path.exists():
+        shutil.copy2(path, backup_path)
+    
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+    
+    _, _, meta = parse_markdown_sections(content)
+    return {"ok": True, "checksum": meta["checksum"] if meta else "", "saved": meta["saved"] if meta else ""}
+
+
+# ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 
@@ -404,6 +518,26 @@ class Handler(BaseHTTPRequestHandler):
             self._json_response({"projects": projects})
             return
 
+        if path == "/api/registry/projects":
+            projects = list_registered_projects()
+            self._json_response({"projects": projects, "mode": "registry"})
+            return
+
+        if path.startswith("/api/registry/projects/"):
+            project_name = path[len("/api/registry/projects/"):]
+            info = read_registered_project(project_name)
+            if "error" in info:
+                self._json_response(info, 404)
+                return
+            client_checksum = qs.get("checksum", [None])[0]
+            if client_checksum and client_checksum == info["checksum"]:
+                self.send_response(304)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                return
+            self._json_response({"content": info["content"], "checksum": info["checksum"]})
+            return
+
         if path.startswith("/api/projects/") and CONFIG.workspace:
             parts = path[len("/api/projects/"):].split("/")
             project_name = parts[0]
@@ -463,6 +597,30 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             name = body.get("name", "")
             result = create_project(name)
+            self._json_response(result)
+            return
+
+        if path == "/api/registry/register":
+            body = self._read_json_body()
+            file_path = body.get("path", "")
+            name = body.get("name")
+            result = register_project(file_path, name)
+            self._json_response(result)
+            return
+
+        if path == "/api/registry/unregister":
+            body = self._read_json_body()
+            name = body.get("name", "")
+            delete_file = body.get("delete_file", False)
+            result = unregister_project(name, delete_file)
+            self._json_response(result)
+            return
+
+        if path.startswith("/api/registry/projects/"):
+            project_name = path[len("/api/registry/projects/"):]
+            body = self._read_json_body()
+            content = body.get("content", "")
+            result = write_registered_project(project_name, content)
             self._json_response(result)
             return
 

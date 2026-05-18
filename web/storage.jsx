@@ -988,7 +988,73 @@ const MultiProjectBackend = {
   },
 };
 
-// ---- Storage — detect backend and delegate ----
+const RegistryBackend = {
+  async detect() {
+    if (location.protocol === 'file:') return false;
+    try {
+      const r = await fetch('/api/registry/projects', { method: 'GET' });
+      return r.ok;
+    } catch { return false; }
+  },
+
+  async loadAll() {
+    const r = await fetch('/api/registry/projects');
+    if (!r.ok) throw new Error('Failed to load projects');
+    const data = await r.json();
+    const results = [];
+    for (const project of data.projects || []) {
+      if (project.missing) {
+        results.push({ id: project.name, name: project.name, path: project.path, entries: [], history: [], meta: null, missing: true });
+        continue;
+      }
+      try {
+        const pr = await fetch(`/api/registry/projects/${encodeURIComponent(project.name)}`);
+        if (!pr.ok) throw new Error('Failed to load project');
+        const pd = await pr.json();
+        const parsed = await Parser.parse(pd.content);
+        results.push({
+          id: project.name, name: project.name, path: project.path,
+          entries: parsed.entries, history: parsed.history, meta: parsed.meta, checksumOk: parsed.checksumOk,
+        });
+      } catch (e) {
+        results.push({ id: project.name, name: project.name, path: project.path, entries: [], history: [], meta: null, error: e.message });
+      }
+    }
+    return results;
+  },
+
+  async registerProject(filePath, name = null) {
+    const r = await fetch('/api/registry/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, name }),
+    });
+    return r.json();
+  },
+
+  async unregisterProject(name, deleteFile = false) {
+    const r = await fetch('/api/registry/unregister', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, delete_file: deleteFile }),
+    });
+    return r.json();
+  },
+
+  async saveProject(projectId, content) {
+    const r = await fetch(`/api/registry/projects/${encodeURIComponent(projectId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    return r.json();
+  },
+
+  async createProject(name) {
+    return { ok: false, error: 'Use registerProject to add projects by file path' };
+  },
+};
+
 const Storage = {
   backend: null,
   mode: 'local', // 'api' | 'direct' | 'multiproject' | 'browser' | 'local'
@@ -1183,6 +1249,7 @@ Object.assign(window, {
   BrowserStorageBackend,
   BrowserMultiProjectBackend,
   MultiProjectBackend,
+  RegistryBackend,
   Storage,
   SyncPoller,
   buildDataFromStorage,

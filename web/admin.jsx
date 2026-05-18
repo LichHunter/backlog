@@ -461,14 +461,14 @@ function AppearanceCard({ tweaks, setTweak }) {
   );
 }
 
-function AdminPage({ data, onClose, history, tweaks, setTweak, storageMode, isMultiProject, projectCount, onEnableMultiProject, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup }) {
+function AdminPage({ data, onClose, history, tweaks, setTweak, storageMode, isMultiProject, projectCount, onEnableMultiProject, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup, onChangeStorageMode }) {
   const [previewBackup, setPreviewBackup] = useState(null);
 
   const counts = countByStatus(data.entries);
   const total = countAll(data.entries);
   const maxStat = Math.max(1, ...Object.values(data.stats.statusMix));
   
-  const canEnableMultiProject = storageMode === 'browser' && !isMultiProject;
+  const canEnableMultiProject = (storageMode === 'browser' || storageMode === 'api') && !isMultiProject;
 
   return (
     <div className="admin">
@@ -492,7 +492,21 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, storageMode, isMu
           <dl className="kv">
             <div><dt>Last save</dt><dd>{fmtTimestamp(data.health.lastSave)}</dd></div>
             <div><dt>Last backup</dt><dd>{fmtTimestamp(data.health.lastBackup)}</dd></div>
-            <div><dt>Storage mode</dt><dd>{data.health.mode}</dd></div>
+            <div><dt>Storage mode</dt><dd>
+              <select className="storage-mode-select" value={storageMode} onChange={(e) => onChangeStorageMode(e.target.value)}>
+                {isMultiProject ? (
+                  <>
+                    <option value="browser-multiproject">Browser Storage</option>
+                    <option value="registry">API Server</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="browser">Browser Storage</option>
+                    <option value="api">API Server</option>
+                  </>
+                )}
+              </select>
+            </dd></div>
             {data.health.masterPath && (
               <div><dt>File path</dt><dd className="mono small">{data.health.masterPath}</dd></div>
             )}
@@ -701,7 +715,7 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, storageMode, isMu
               )}
             </div>
             {canEnableMultiProject && (
-              <button className="btn-primary" onClick={onEnableMultiProject} style={{ width: '100%' }}>
+              <button className="btn-primary" onClick={() => onChangeStorageMode(storageMode === 'api' ? 'registry' : 'browser-multiproject')} style={{ width: '100%' }}>
                 Enable multi-project mode
               </button>
             )}
@@ -709,7 +723,7 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, storageMode, isMu
               <div style={{ fontSize: 12, color: 'var(--ink-3)', padding: '8px 12px', background: 'var(--bg-2)', borderRadius: 6 }}>
                 {storageMode === 'direct' || storageMode === 'multiproject' 
                   ? 'Use "Workspace (multi-project)" when connecting.'
-                  : 'Requires browser storage or File System Access API.'}
+                  : 'Requires browser storage or API server.'}
               </div>
             )}
           </section>

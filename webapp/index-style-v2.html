@@ -695,6 +695,15 @@ input { font: inherit; color: inherit; }
 .admin-section { margin-top: 40px; padding-top: 32px; border-top: 1px solid var(--rule); }
 .admin-section-head { margin-bottom: 20px; }
 .admin-section-head h2 { font-size: 20px; font-weight: 600; margin: 0; color: var(--ink-2); }
+.storage-mode-select {
+  appearance: none; -webkit-appearance: none;
+  background: var(--bg-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
+  border: 1px solid var(--rule); border-radius: 6px;
+  color: var(--ink); font-size: 13px; padding: 8px 32px 8px 12px; cursor: pointer;
+  min-width: 180px;
+}
+.storage-mode-select:hover { border-color: var(--ink-3); }
+.storage-mode-select:focus { outline: none; border-color: var(--accent); }
 .admin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
 .card { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: 18px 20px; box-shadow: var(--shadow-2); }
 .card.span-2 { grid-column: span 2; }
@@ -948,6 +957,8 @@ input { font: inherit; color: inherit; }
 }
 .dlg-msg { font-size: 14px; color: var(--ink); margin: 0 0 8px; }
 .dlg-detail { font-size: 12.5px; color: var(--ink-3); padding: 8px 12px; background: var(--bg-2); border: 1px dashed var(--rule); border-radius: 6px; }
+.dlg-checkbox { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.dlg-checkbox input { width: 16px; height: 16px; accent-color: var(--red); cursor: pointer; }
 
 .dlg-foot {
   display: flex; align-items: center; justify-content: space-between;
@@ -3476,8 +3487,109 @@ const MultiProjectBackend = {
     }
   }
 };
-
-// ---- Storage — detect backend and delegate ----
+const RegistryBackend = {
+  async detect() {
+    if (location.protocol === 'file:') return false;
+    try {
+      const r = await fetch('/api/registry/projects', {
+        method: 'GET'
+      });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  },
+  async loadAll() {
+    const r = await fetch('/api/registry/projects');
+    if (!r.ok) throw new Error('Failed to load projects');
+    const data = await r.json();
+    const results = [];
+    for (const project of data.projects || []) {
+      if (project.missing) {
+        results.push({
+          id: project.name,
+          name: project.name,
+          path: project.path,
+          entries: [],
+          history: [],
+          meta: null,
+          missing: true
+        });
+        continue;
+      }
+      try {
+        const pr = await fetch(`/api/registry/projects/${encodeURIComponent(project.name)}`);
+        if (!pr.ok) throw new Error('Failed to load project');
+        const pd = await pr.json();
+        const parsed = await Parser.parse(pd.content);
+        results.push({
+          id: project.name,
+          name: project.name,
+          path: project.path,
+          entries: parsed.entries,
+          history: parsed.history,
+          meta: parsed.meta,
+          checksumOk: parsed.checksumOk
+        });
+      } catch (e) {
+        results.push({
+          id: project.name,
+          name: project.name,
+          path: project.path,
+          entries: [],
+          history: [],
+          meta: null,
+          error: e.message
+        });
+      }
+    }
+    return results;
+  },
+  async registerProject(filePath, name = null) {
+    const r = await fetch('/api/registry/register', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        path: filePath,
+        name
+      })
+    });
+    return r.json();
+  },
+  async unregisterProject(name, deleteFile = false) {
+    const r = await fetch('/api/registry/unregister', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name,
+        delete_file: deleteFile
+      })
+    });
+    return r.json();
+  },
+  async saveProject(projectId, content) {
+    const r = await fetch(`/api/registry/projects/${encodeURIComponent(projectId)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        content
+      })
+    });
+    return r.json();
+  },
+  async createProject(name) {
+    return {
+      ok: false,
+      error: 'Use registerProject to add projects by file path'
+    };
+  }
+};
 const Storage = {
   backend: null,
   mode: 'local',
@@ -3710,6 +3822,7 @@ Object.assign(window, {
   BrowserStorageBackend,
   BrowserMultiProjectBackend,
   MultiProjectBackend,
+  RegistryBackend,
   Storage,
   SyncPoller,
   buildDataFromStorage
@@ -4854,7 +4967,8 @@ function ItemDialog({
   onClose,
   onSubmit,
   recentTags = [],
-  isMultiProject = false
+  isMultiProject = false,
+  storageMode = ''
 }) {
   const [title, setTitle] = useStateD("");
   const [priority, setPriority] = useStateD("P2");
@@ -4865,8 +4979,10 @@ function ItemDialog({
   const [reason, setReason] = useStateD("");
   const [progress, setProgress] = useStateD(0);
   const [createAsProject, setCreateAsProject] = useStateD(false);
+  const [projectPath, setProjectPath] = useStateD("");
   const titleRef = useRefD(null);
   const showProjectOption = isMultiProject && mode === "add";
+  const showPathInput = showProjectOption && createAsProject && storageMode === 'registry';
   useEffectD(() => {
     if (!open) return;
     setTitle(initial?.title || "");
@@ -4878,6 +4994,7 @@ function ItemDialog({
     setReason(initial?.reason || "");
     setProgress(initial?.progress ?? 0);
     setCreateAsProject(false);
+    setProjectPath("");
     setTimeout(() => titleRef.current?.focus(), 50);
   }, [open, initial]);
   const addTag = t => {
@@ -4890,9 +5007,13 @@ function ItemDialog({
   const submit = e => {
     e?.preventDefault();
     if (!title.trim()) return;
-    // Reconcile progress with status before submitting.
+    if (showPathInput && !projectPath.trim()) return;
     let outProgress = snapProgress(progress);
     if (status === "done") outProgress = 100;
+    let finalPath = projectPath.trim();
+    if (finalPath && !finalPath.endsWith('.md')) {
+      finalPath = finalPath.replace(/\/$/, '') + '/backlog.md';
+    }
     onSubmit({
       title: title.trim(),
       priority,
@@ -4901,7 +5022,8 @@ function ItemDialog({
       tags,
       reason: status === "blocked" ? reason.trim() || null : null,
       progress: outProgress,
-      createAsProject: showProjectOption && createAsProject
+      createAsProject: showProjectOption && createAsProject,
+      projectPath: finalPath || null
     });
   };
   const tagSuggestions = recentTags.filter(t => !tags.includes(t)).slice(0, 8);
@@ -4911,7 +5033,13 @@ function ItemDialog({
     width: 520,
     labelledBy: "dlg-item-title"
   }, /*#__PURE__*/React.createElement("form", {
-    onSubmit: submit
+    onSubmit: submit,
+    onKeyDown: e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    }
   }, /*#__PURE__*/React.createElement(DialogHeader, {
     id: "dlg-item-title",
     eyebrow: mode === "edit" ? "Edit item" : mode === "add-child" ? "Add sub-item" : "New item",
@@ -5051,7 +5179,24 @@ function ItemDialog({
     size: 16
   })), /*#__PURE__*/React.createElement("span", {
     className: "status-card-label"
-  }, "Project"))))), /*#__PURE__*/React.createElement("div", {
+  }, "Project")))), showPathInput && /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "field-label"
+  }, "File path ", /*#__PURE__*/React.createElement("span", {
+    className: "field-hint"
+  }, "path to backlog.md (created if missing)")), /*#__PURE__*/React.createElement("input", {
+    className: "text-input",
+    value: projectPath,
+    onChange: e => setProjectPath(e.target.value),
+    placeholder: "~/Code/myproject/backlog.md",
+    onKeyDown: e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    }
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot"
   }, /*#__PURE__*/React.createElement("span", {
     className: "dlg-hint"
@@ -5064,8 +5209,8 @@ function ItemDialog({
   }, "Cancel"), /*#__PURE__*/React.createElement("button", {
     type: "submit",
     className: "btn-primary",
-    disabled: !title.trim()
-  }, mode === "edit" ? "Save changes" : "Create item")))));
+    disabled: !title.trim() || showPathInput && !projectPath.trim()
+  }, mode === "edit" ? "Save changes" : showPathInput ? "Register project" : "Create item")))));
 }
 
 // --- Confirm dialog ---
@@ -5074,11 +5219,16 @@ function ConfirmDialog({
   title,
   message,
   detail,
+  checkbox,
   confirmLabel = "Confirm",
   danger = false,
   onCancel,
   onConfirm
 }) {
+  const [checked, setChecked] = useStateD(false);
+  useEffectD(() => {
+    if (open) setChecked(false);
+  }, [open]);
   return /*#__PURE__*/React.createElement(Dialog, {
     open: open,
     onClose: onCancel,
@@ -5095,7 +5245,13 @@ function ConfirmDialog({
     className: "dlg-msg"
   }, message), detail && /*#__PURE__*/React.createElement("div", {
     className: "dlg-detail"
-  }, detail)), /*#__PURE__*/React.createElement("div", {
+  }, detail), checkbox && /*#__PURE__*/React.createElement("label", {
+    className: "dlg-checkbox"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: checked,
+    onChange: e => setChecked(e.target.checked)
+  }), /*#__PURE__*/React.createElement("span", null, checkbox))), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot"
   }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot-actions"
@@ -5106,9 +5262,72 @@ function ConfirmDialog({
   }, "Cancel"), /*#__PURE__*/React.createElement("button", {
     type: "button",
     className: danger ? "btn-danger" : "btn-primary",
-    onClick: onConfirm,
+    onClick: () => onConfirm(checked),
     autoFocus: true
   }, confirmLabel))));
+}
+
+// --- Prompt dialog (styled input) ---
+function PromptDialog({
+  open,
+  title,
+  message,
+  placeholder = "",
+  confirmLabel = "OK",
+  onCancel,
+  onConfirm
+}) {
+  const [value, setValue] = useStateD("");
+  const inputRef = useRefD(null);
+  useEffectD(() => {
+    if (open) {
+      setValue("");
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [open]);
+  const submit = e => {
+    e?.preventDefault();
+    if (!value.trim()) return;
+    onConfirm(value.trim());
+  };
+  return /*#__PURE__*/React.createElement(Dialog, {
+    open: open,
+    onClose: onCancel,
+    width: 480,
+    labelledBy: "dlg-prompt-title"
+  }, /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit
+  }, /*#__PURE__*/React.createElement(DialogHeader, {
+    id: "dlg-prompt-title",
+    eyebrow: "Input",
+    title: title,
+    onClose: onCancel
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-body"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "dlg-msg"
+  }, message), /*#__PURE__*/React.createElement("input", {
+    ref: inputRef,
+    className: "text-input",
+    value: value,
+    onChange: e => setValue(e.target.value),
+    placeholder: placeholder,
+    style: {
+      marginTop: 12
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-foot"
+  }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-foot-actions"
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn-secondary",
+    onClick: onCancel
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "btn-primary",
+    disabled: !value.trim()
+  }, confirmLabel)))));
 }
 
 // --- Tag autocomplete (typed input + filtered dropdown) ---
@@ -5251,6 +5470,7 @@ function TagMatchHL({
 window.Dialog = Dialog;
 window.ItemDialog = ItemDialog;
 window.ConfirmDialog = ConfirmDialog;
+window.PromptDialog = PromptDialog;
 </script>
   <script>
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
@@ -5946,13 +6166,14 @@ function AdminPage({
   onForceBackup,
   onCompact,
   onRestore,
-  onDownloadBackup
+  onDownloadBackup,
+  onChangeStorageMode
 }) {
   const [previewBackup, setPreviewBackup] = useState(null);
   const counts = countByStatus(data.entries);
   const total = countAll(data.entries);
   const maxStat = Math.max(1, ...Object.values(data.stats.statusMix));
-  const canEnableMultiProject = storageMode === 'browser' && !isMultiProject;
+  const canEnableMultiProject = (storageMode === 'browser' || storageMode === 'api') && !isMultiProject;
   return /*#__PURE__*/React.createElement("div", {
     className: "admin"
   }, /*#__PURE__*/React.createElement("div", {
@@ -5972,7 +6193,19 @@ function AdminPage({
     className: `pill ${data.health.integrityOk ? "ok" : "warn"}`
   }, data.health.integrityOk ? "✓ integrity ok" : "checksum mismatch")), /*#__PURE__*/React.createElement("dl", {
     className: "kv"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Last save"), /*#__PURE__*/React.createElement("dd", null, fmtTimestamp(data.health.lastSave))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Last backup"), /*#__PURE__*/React.createElement("dd", null, fmtTimestamp(data.health.lastBackup))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Storage mode"), /*#__PURE__*/React.createElement("dd", null, data.health.mode)), data.health.masterPath && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "File path"), /*#__PURE__*/React.createElement("dd", {
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Last save"), /*#__PURE__*/React.createElement("dd", null, fmtTimestamp(data.health.lastSave))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Last backup"), /*#__PURE__*/React.createElement("dd", null, fmtTimestamp(data.health.lastBackup))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Storage mode"), /*#__PURE__*/React.createElement("dd", null, /*#__PURE__*/React.createElement("select", {
+    className: "storage-mode-select",
+    value: storageMode,
+    onChange: e => onChangeStorageMode(e.target.value)
+  }, isMultiProject ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("option", {
+    value: "browser-multiproject"
+  }, "Browser Storage"), /*#__PURE__*/React.createElement("option", {
+    value: "registry"
+  }, "API Server")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("option", {
+    value: "browser"
+  }, "Browser Storage"), /*#__PURE__*/React.createElement("option", {
+    value: "api"
+  }, "API Server"))))), data.health.masterPath && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "File path"), /*#__PURE__*/React.createElement("dd", {
     className: "mono small"
   }, data.health.masterPath)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Checksum"), /*#__PURE__*/React.createElement("dd", {
     className: "mono small"
@@ -6169,7 +6402,7 @@ function AdminPage({
     }
   }, isMultiProject ? /*#__PURE__*/React.createElement(React.Fragment, null, "Enabled with ", /*#__PURE__*/React.createElement("strong", null, projectCount), " project", projectCount !== 1 ? 's' : '', ". Create new projects from the \"New item\" dialog.") : /*#__PURE__*/React.createElement(React.Fragment, null, "Organize items into separate projects. Each project has its own backlog and history.")), canEnableMultiProject && /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
-    onClick: onEnableMultiProject,
+    onClick: () => onChangeStorageMode(storageMode === 'api' ? 'registry' : 'browser-multiproject'),
     style: {
       width: '100%'
     }
@@ -6181,7 +6414,7 @@ function AdminPage({
       background: 'var(--bg-2)',
       borderRadius: 6
     }
-  }, storageMode === 'direct' || storageMode === 'multiproject' ? 'Use "Workspace (multi-project)" when connecting.' : 'Requires browser storage or File System Access API.')))));
+  }, storageMode === 'direct' || storageMode === 'multiproject' ? 'Use "Workspace (multi-project)" when connecting.' : 'Requires browser storage or API server.')))));
 }
 window.AdminPage = AdminPage;
 </script>
@@ -6375,6 +6608,7 @@ function App() {
   const [importExportOpen, setImportExportOpen] = useStateMain(false);
   const [itemDialog, setItemDialog] = useStateMain(null);
   const [confirm, setConfirm] = useStateMain(null);
+  const [promptDlg, setPromptDlg] = useStateMain(null);
   const [needsConnect, setNeedsConnect] = useStateMain(false);
   const [isMultiProject, setIsMultiProject] = useStateMain(false);
   const [projects, setProjects] = useStateMain([]);
@@ -6437,7 +6671,8 @@ function App() {
         if (mode === 'browser') {
           if (cancelled) return;
           const savedState = loadLocalState();
-          if (savedState?.multiProjectMode === 'browser-multiproject') {
+          const savedMode = savedState?.multiProjectMode || localStorage.getItem('multiProjectMode');
+          if (savedMode === 'browser-multiproject') {
             const projectsData = await BrowserMultiProjectBackend.loadAll();
             if (projectsData.length > 0) {
               setProjects(projectsData);
@@ -6464,6 +6699,34 @@ function App() {
           }
           await applyStorageData(mode, () => cancelled);
           return;
+        }
+        if (mode === 'api') {
+          const savedState = loadLocalState();
+          const savedMode = savedState?.multiProjectMode || localStorage.getItem('multiProjectMode');
+          if (savedMode === 'registry') {
+            const projectsData = await RegistryBackend.loadAll();
+            setProjects(projectsData);
+            setIsMultiProject(true);
+            setStorageMode('registry');
+            if (projectsData.length > 0) {
+              const mergedData = buildMergedDataFromProjects(projectsData);
+              setData(mergedData);
+              const em = {};
+              projectsData.forEach(p => {
+                walkTree(p.entries, it => {
+                  em[it.id] = !it.collapsed;
+                });
+              });
+              setExpandedMap(savedState.expandedMap || em);
+            }
+            const pem = {};
+            projectsData.forEach(p => {
+              pem[p.id] = true;
+            });
+            setProjectExpandedMap(pem);
+            setIsLoading(false);
+            return;
+          }
         }
         if (mode === 'direct') {
           // Try silent reconnect — works if permission is still active from a previous session.
@@ -6600,8 +6863,40 @@ function App() {
       showToast('Workspace connect failed: ' + e.message, 'err');
     }
   };
+  const doRegisterProject = async filePath => {
+    try {
+      const result = await RegistryBackend.registerProject(filePath.trim());
+      if (!result.ok) {
+        showToast(result.error, 'err');
+        return;
+      }
+      const projectsData = await RegistryBackend.loadAll();
+      setProjects(projectsData);
+      const mergedData = buildMergedDataFromProjects(projectsData);
+      setData(mergedData);
+      setProjectExpandedMap(prev => ({
+        ...prev,
+        [result.name]: true
+      }));
+      showToast(`Registered project: ${result.name}`);
+    } catch (e) {
+      showToast('Failed to register project: ' + e.message, 'err');
+    }
+  };
   const handleCreateProject = async () => {
-    const name = prompt('Project name:');
+    if (storageMode === 'registry') {
+      setPromptDlg({
+        title: 'Register project',
+        message: 'Enter the path to an existing backlog.md file',
+        placeholder: '~/Code/myproject/backlog.md',
+        onConfirm: value => {
+          setPromptDlg(null);
+          doRegisterProject(value);
+        }
+      });
+      return;
+    }
+    const name = window.prompt('Project name:');
     if (!name || !name.trim()) return;
     const safeName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
     try {
@@ -6694,18 +6989,22 @@ function App() {
     if (!proj) return;
     const itemCount = countAll(proj.entries);
     const isBrowserMode = storageMode === 'browser-multiproject';
+    const isRegistryMode = storageMode === 'registry';
     setConfirm({
       title: 'Delete project?',
       message: /*#__PURE__*/React.createElement(React.Fragment, null, "Delete ", /*#__PURE__*/React.createElement("strong", null, proj.name), "?"),
       detail: /*#__PURE__*/React.createElement("span", {
         className: "muted"
-      }, isBrowserMode ? `This will permanently delete ${itemCount} item${itemCount !== 1 ? 's' : ''} from browser storage.` : `The folder and ${itemCount} item${itemCount !== 1 ? 's' : ''} will remain on disk.`),
+      }, isBrowserMode ? `This will permanently delete ${itemCount} item${itemCount !== 1 ? 's' : ''} from browser storage.` : `The file contains ${itemCount} item${itemCount !== 1 ? 's' : ''}.`),
+      checkbox: isRegistryMode ? 'Also delete the file from disk' : null,
       confirmLabel: 'Delete',
       danger: true,
-      onConfirm: async () => {
+      onConfirm: async deleteFromDisk => {
         try {
           if (isBrowserMode) {
             await BrowserMultiProjectBackend.removeProject(projectId);
+          } else if (isRegistryMode) {
+            await RegistryBackend.unregisterProject(projectId, deleteFromDisk);
           }
           const newProjects = projects.filter(p => p.id !== projectId);
           setProjects(newProjects);
@@ -6724,7 +7023,7 @@ function App() {
             return next;
           });
           setConfirm(null);
-          showToast(`Deleted: ${proj.name}`);
+          showToast(deleteFromDisk ? `Deleted from disk: ${proj.name}` : `Removed: ${proj.name}`);
         } catch (e) {
           showToast('Delete failed: ' + e.message, 'err');
           setConfirm(null);
@@ -6744,7 +7043,7 @@ function App() {
       const em = latestExpandedMap.current;
       try {
         if (isMultiProject) {
-          const backend = storageMode === 'browser-multiproject' ? BrowserMultiProjectBackend : MultiProjectBackend;
+          const backend = storageMode === 'browser-multiproject' ? BrowserMultiProjectBackend : storageMode === 'registry' ? RegistryBackend : MultiProjectBackend;
           const dirtyProjects = projectId ? [projectId] : [...new Set(d.entries.map(e => e._projectId).filter(Boolean))];
           for (const pId of dirtyProjects) {
             const projectEntries = d.entries.filter(e => e._projectId === pId);
@@ -6989,12 +7288,37 @@ function App() {
   };
   const submitItemDialog = async vals => {
     if (vals.createAsProject && isMultiProject) {
+      setItemDialog(null);
+      if (storageMode === 'registry') {
+        const suggestedName = vals.title.replace(/[^a-zA-Z0-9_-]/g, '-');
+        try {
+          const result = await RegistryBackend.registerProject(vals.projectPath, suggestedName);
+          if (!result.ok) {
+            showToast(result.error, 'err');
+            return;
+          }
+          const projectsData = await RegistryBackend.loadAll();
+          setProjects(projectsData);
+          setIsMultiProject(true);
+          const mergedData = buildMergedDataFromProjects(projectsData);
+          setData(mergedData);
+          setProjectExpandedMap(prev => ({
+            ...prev,
+            [result.name]: true
+          }));
+          showToast(`Registered project: ${result.name}`);
+        } catch (e) {
+          showToast('Failed to register project: ' + e.message, 'err');
+        }
+        return;
+      }
       const safeName = vals.title.replace(/[^a-zA-Z0-9_-]/g, '-');
       try {
         const backend = storageMode === 'browser-multiproject' ? BrowserMultiProjectBackend : MultiProjectBackend;
         await backend.createProject(safeName);
         const projectsData = await backend.loadAll();
         setProjects(projectsData);
+        setIsMultiProject(true);
         const mergedData = buildMergedDataFromProjects(projectsData);
         setData(mergedData);
         setProjectExpandedMap(prev => ({
@@ -7005,7 +7329,6 @@ function App() {
       } catch (e) {
         showToast('Failed to create project: ' + e.message, 'err');
       }
-      setItemDialog(null);
       return;
     }
     if (itemDialog.mode === 'edit') {
@@ -7156,6 +7479,88 @@ function App() {
   }, []);
 
   // ---- Restore from backup ----
+  const handleChangeStorageMode = async newMode => {
+    if (newMode === storageMode) return;
+    try {
+      if (newMode === 'api') {
+        const apiAvailable = await ApiBackend.detect();
+        if (!apiAvailable) {
+          showToast('No server found. Run: python3 server/server.py', 'err');
+          return;
+        }
+        SyncPoller.stop();
+        const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getSize ? Storage.getSize() : Promise.resolve(null)]);
+        const parsed = await Parser.parse(raw);
+        const newData = await buildDataFromStorage(parsed, backups, 'api', sizeInfo);
+        setData(newData);
+        setStorageMode('api');
+        setIsMultiProject(false);
+        setProjects([]);
+        localStorage.removeItem('multiProjectMode');
+        const em = {};
+        walkTree(newData.entries, it => {
+          em[it.id] = !it.collapsed;
+        });
+        setExpandedMap(em);
+        SyncPoller.start(async remote => {
+          const rp = await Parser.parse(remote);
+          setData(d => ({
+            ...d,
+            entries: rp.entries,
+            history: rp.history
+          }));
+        });
+        showToast('Connected to API server');
+      } else if (newMode === 'browser') {
+        SyncPoller.stop();
+        const content = await Parser.serialize({
+          entries: data.entries,
+          history: data.history
+        });
+        await BrowserBackend.save(content);
+        setStorageMode('browser');
+        setIsMultiProject(false);
+        setProjects([]);
+        localStorage.removeItem('multiProjectMode');
+        showToast('Switched to browser storage');
+      } else if (newMode === 'browser-multiproject') {
+        SyncPoller.stop();
+        await handleEnableBrowserMultiProject();
+        showToast('Switched to browser multi-project');
+      } else if (newMode === 'registry') {
+        const apiAvailable = await RegistryBackend.detect();
+        if (!apiAvailable) {
+          showToast('No server found. Run: python3 server/server.py', 'err');
+          return;
+        }
+        SyncPoller.stop();
+        const projectsData = await RegistryBackend.loadAll();
+        setProjects(projectsData);
+        setIsMultiProject(true);
+        setStorageMode('registry');
+        if (projectsData.length > 0) {
+          const mergedData = buildMergedDataFromProjects(projectsData);
+          setData(mergedData);
+          const em = {};
+          projectsData.forEach(p => {
+            walkTree(p.entries, it => {
+              em[it.id] = !it.collapsed;
+            });
+          });
+          setExpandedMap(em);
+        }
+        const pem = {};
+        projectsData.forEach(p => {
+          pem[p.id] = true;
+        });
+        setProjectExpandedMap(pem);
+        localStorage.setItem('multiProjectMode', 'registry');
+        showToast('Connected to server');
+      }
+    } catch (e) {
+      showToast('Failed to switch: ' + e.message, 'err');
+    }
+  };
   const handleRestore = b => {
     setConfirm({
       title: 'Restore this backup?',
@@ -7200,8 +7605,43 @@ function App() {
   // ---- Import entries from parsed content ----
   const handleImport = async ({
     entries,
-    history
+    history,
+    importPath
   }) => {
+    if (importPath && storageMode === 'registry') {
+      try {
+        const result = await RegistryBackend.registerProject(importPath);
+        if (!result.ok) {
+          showToast(result.error, 'err');
+          return;
+        }
+        const content = await Parser.serialize({
+          entries,
+          history
+        });
+        await RegistryBackend.saveProject(result.name, content);
+        const projectsData = await RegistryBackend.loadAll();
+        setProjects(projectsData);
+        setIsMultiProject(true);
+        const mergedData = buildMergedDataFromProjects(projectsData);
+        mergedData.history.unshift({
+          timestamp: new Date().toISOString(),
+          itemId: 'system',
+          action: 'imported',
+          details: `${entries.length} entries to ${result.name}`
+        });
+        setData(mergedData);
+        setProjectExpandedMap(prev => ({
+          ...prev,
+          [result.name]: true
+        }));
+        setImportExportOpen(false);
+        showToast(`Imported to ${result.name}`);
+      } catch (e) {
+        showToast('Import failed: ' + e.message, 'err');
+      }
+      return;
+    }
     const projectIds = [...new Set(entries.map(e => e._projectId).filter(Boolean))];
     const hasProjectSections = projectIds.length > 0;
     if (hasProjectSections && !isMultiProject) {
@@ -7321,7 +7761,7 @@ function App() {
     size: 14
   }), /*#__PURE__*/React.createElement("span", null, "This browser can't access local files directly \u2014 ", /*#__PURE__*/React.createElement("strong", null, "changes won't be saved."), ' ', "Open in Chrome or Edge to save without a server, or run", ' ', /*#__PURE__*/React.createElement("code", {
     className: "mono"
-  }, "python3 server/server.py"), " for any browser.")), storageMode === 'browser' && !isMultiProject && /*#__PURE__*/React.createElement("div", {
+  }, "python3 server/server.py"), " for any browser.")), (storageMode === 'browser' || storageMode === 'browser-multiproject') && /*#__PURE__*/React.createElement("div", {
     className: "banner info",
     style: {
       gap: 8
@@ -7418,11 +7858,7 @@ function App() {
     className: "legend-hint"
   }, tweaks.sort_mode === 'manual' ? /*#__PURE__*/React.createElement(React.Fragment, null, "Drag rows to reorder \xB7 ") : /*#__PURE__*/React.createElement(React.Fragment, null, "Auto-sorted by priority \xB7 drag/arrows reorder within priority \xB7 "), /*#__PURE__*/React.createElement("kbd", null, "/"), " search \xB7 ", /*#__PURE__*/React.createElement("kbd", null, "n"), " new"))), /*#__PURE__*/React.createElement("div", {
     className: "content-scroll"
-  }, filtered.length === 0 ? /*#__PURE__*/React.createElement("div", {
-    className: "empty-state"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "empty-glyph"
-  }, "\u2205"), /*#__PURE__*/React.createElement("div", null, hasFilters ? 'No items match these filters.' : 'No items yet. Press n or click "+ New item" to start.')) : isMultiProject && entriesByProject ? /*#__PURE__*/React.createElement("div", {
+  }, isMultiProject && entriesByProject && entriesByProject.length > 0 ? /*#__PURE__*/React.createElement("div", {
     className: "project-sections"
   }, entriesByProject.map(proj => {
     const projFiltered = filterProjectEntries(proj.entries, filters, tweaks.sort_mode);
@@ -7485,7 +7921,11 @@ function App() {
       statusStyle: tweaks.status_style,
       manualOrder: tweaks.sort_mode === 'manual'
     })));
-  })) : /*#__PURE__*/React.createElement(BacklogTree, {
+  })) : filtered.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "empty-state"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "empty-glyph"
+  }, "\u2205"), /*#__PURE__*/React.createElement("div", null, hasFilters ? 'No items match these filters.' : 'No items yet. Press n or click "+ New item" to start.')) : /*#__PURE__*/React.createElement(BacklogTree, {
     items: filtered,
     expandedMap: expandedMap,
     setExpanded: setExpanded,
@@ -7512,6 +7952,7 @@ function App() {
       triggerSave('History compacted');
     },
     onRestore: handleRestore,
+    onChangeStorageMode: handleChangeStorageMode,
     onDownloadBackup: name => {
       if (Storage.mode === 'api') {
         const a = document.createElement('a');
@@ -7529,16 +7970,25 @@ function App() {
     recentTags: recentTags,
     onClose: () => setItemDialog(null),
     onSubmit: submitItemDialog,
-    isMultiProject: isMultiProject
+    isMultiProject: isMultiProject,
+    storageMode: storageMode
   }), /*#__PURE__*/React.createElement(ConfirmDialog, {
     open: !!confirm,
     title: confirm?.title,
     message: confirm?.message,
     detail: confirm?.detail,
+    checkbox: confirm?.checkbox,
     confirmLabel: confirm?.confirmLabel,
     danger: confirm?.danger,
     onCancel: () => setConfirm(null),
     onConfirm: confirm?.onConfirm
+  }), /*#__PURE__*/React.createElement(PromptDialog, {
+    open: !!promptDlg,
+    title: promptDlg?.title,
+    message: promptDlg?.message,
+    placeholder: promptDlg?.placeholder,
+    onCancel: () => setPromptDlg(null),
+    onConfirm: promptDlg?.onConfirm
   }), /*#__PURE__*/React.createElement(ImportExportDialog, {
     open: importExportOpen,
     data: data,
@@ -7706,7 +8156,7 @@ function Header({
   onSearch,
   onOpenImportExport
 }) {
-  const modeIcon = storageMode === 'api' ? '⚡' : storageMode === 'direct' ? '📁' : storageMode === 'multiproject' ? '📂' : storageMode === 'browser-multiproject' ? '🗂️' : storageMode === 'browser' ? '🌐' : '💾';
+  const modeIcon = storageMode === 'api' ? '⚡' : storageMode === 'direct' ? '📁' : storageMode === 'multiproject' ? '📂' : storageMode === 'registry' ? '📂' : storageMode === 'browser-multiproject' ? '🗂️' : storageMode === 'browser' ? '🌐' : '💾';
   return /*#__PURE__*/React.createElement("header", {
     className: "header"
   }, /*#__PURE__*/React.createElement("div", {
@@ -7780,7 +8230,11 @@ function ImportExportDialog({
   const [tab, setTab] = useStateD('md');
   const [copied, setCopied] = useStateD(false);
   const [mdContent, setMdContent] = useStateD('');
+  const [pendingImport, setPendingImport] = useStateD(null);
+  const [importPath, setImportPath] = useStateD('');
   const fileInputRef = useRefD(null);
+  const pathInputRef = useRefD(null);
+  const isRegistryMode = storageMode === 'registry';
 
   // Async-generate markdown when dialog opens or data changes.
   useEffectD(() => {
@@ -7853,14 +8307,90 @@ function ImportExportDialog({
         entries = parsed.entries;
         history = parsed.history;
       }
-      onImport({
-        entries,
-        history
-      });
+      if (isRegistryMode) {
+        setPendingImport({
+          entries,
+          history
+        });
+        setImportPath('');
+        setTimeout(() => pathInputRef.current?.focus(), 50);
+      } else {
+        onImport({
+          entries,
+          history
+        });
+      }
     } catch (err) {
       alert('Import failed: ' + err.message);
     }
   };
+  const submitRegistryImport = () => {
+    if (!pendingImport || !importPath.trim()) return;
+    onImport({
+      ...pendingImport,
+      importPath: importPath.trim()
+    });
+    setPendingImport(null);
+    setImportPath('');
+  };
+  if (pendingImport) {
+    const entryCount = pendingImport.entries.length;
+    return /*#__PURE__*/React.createElement(Dialog, {
+      open: open,
+      onClose: () => {
+        setPendingImport(null);
+        setImportPath('');
+      },
+      width: 520,
+      labelledBy: "dlg-ie-title"
+    }, /*#__PURE__*/React.createElement(DialogHeader, {
+      id: "dlg-ie-title",
+      eyebrow: "Import",
+      title: "Save imported file",
+      onClose: () => {
+        setPendingImport(null);
+        setImportPath('');
+      }
+    }), /*#__PURE__*/React.createElement("form", {
+      onSubmit: e => {
+        e.preventDefault();
+        submitRegistryImport();
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "dlg-body"
+    }, /*#__PURE__*/React.createElement("p", {
+      className: "dlg-msg"
+    }, "Importing ", entryCount, " item", entryCount !== 1 ? 's' : '', ". Choose where to save:"), /*#__PURE__*/React.createElement("div", {
+      className: "dlg-field"
+    }, /*#__PURE__*/React.createElement("label", null, "File path"), /*#__PURE__*/React.createElement("input", {
+      ref: pathInputRef,
+      type: "text",
+      value: importPath,
+      onChange: e => setImportPath(e.target.value),
+      placeholder: "/path/to/project/backlog.md",
+      className: "dlg-input"
+    }), /*#__PURE__*/React.createElement("div", {
+      className: "dlg-hint"
+    }, "Will create file if it doesn't exist"))), /*#__PURE__*/React.createElement("div", {
+      className: "dlg-foot"
+    }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("div", {
+      className: "dlg-foot-actions"
+    }, /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      className: "btn-secondary",
+      onClick: () => {
+        setPendingImport(null);
+        setImportPath('');
+      }
+    }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+      type: "submit",
+      className: "btn-primary",
+      disabled: !importPath.trim()
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "download",
+      size: 12
+    }), " Import")))));
+  }
   return /*#__PURE__*/React.createElement(Dialog, {
     open: open,
     onClose: onClose,
