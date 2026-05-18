@@ -18,17 +18,18 @@
         "x86_64-linux"
       ];
 
+      flake = {
+        nixosModules.default = import ./nix/module.nix;
+        nixosModules.personal-backlog = import ./nix/module.nix;
+      };
+
       perSystem =
         {
           system,
+          pkgs,
           ...
         }:
         let
-          pkgs = import nixpkgs {
-            inherit system;
-            config.allowUnfree = true;
-          };
-
           pre-commit-check = git-hooks.lib.${system}.run {
             src = ./.;
             hooks = {
@@ -38,6 +39,11 @@
         in
         {
           formatter = pkgs.nixfmt-tree;
+
+          packages = {
+            default = pkgs.callPackage ./nix/package.nix { };
+            personal-backlog = pkgs.callPackage ./nix/package.nix { };
+          };
 
           checks = {
             inherit pre-commit-check;
