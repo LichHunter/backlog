@@ -648,12 +648,41 @@ input { font: inherit; color: inherit; }
 }
 
 .empty-state { text-align: center; padding: 60px 20px; color: var(--ink-3); background: var(--paper); border: 1px dashed var(--rule); border-radius: var(--radius-lg); }
+
+/* ---- Project Sections (Multi-project mode) ---- */
+.project-sections { display: flex; flex-direction: column; gap: 16px; }
+.project-section { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius-lg); overflow: hidden; }
+.project-section-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  background: var(--surface); cursor: pointer; user-select: none;
+  border-bottom: 1px solid transparent; transition: background 0.15s;
+}
+.project-section-header:hover { background: var(--hover); }
+.project-section-header.expanded { border-bottom-color: var(--rule); }
+.project-section-chevron { font-size: 10px; color: var(--ink-3); width: 14px; }
+.project-section-name { font-weight: 600; font-size: 14px; color: var(--ink-1); }
+.project-section-count { font-size: 12px; color: var(--ink-3); margin-left: 4px; }
+.project-section-actions {
+  margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s;
+}
+.project-section-header:hover .project-section-actions { opacity: 1; }
+.project-section-btn {
+  padding: 4px 6px; border: none; background: transparent;
+  color: var(--ink-3); cursor: pointer; border-radius: var(--radius); transition: all 0.15s;
+}
+.project-section-btn:hover { background: var(--accent-bg); color: var(--accent); }
+.project-section-btn-danger:hover { background: hsl(0 70% 95%); color: hsl(0 70% 45%); }
+.project-section-content { padding: 8px 0; }
+.project-empty { padding: 20px; text-align: center; color: var(--ink-3); font-size: 13px; }
 .empty-glyph { font-family: var(--font-mono); font-size: 36px; margin-bottom: 8px; color: var(--rule); }
 
 /* ---------- Admin ---------- */
 .admin { padding: 28px 32px 80px; max-width: 1280px; margin: 0 auto; width: 100%; overflow-y: auto; height: 100%; }
 .admin-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 24px; }
 .admin-head h2 { font-size: 26px; font-weight: 600; letter-spacing: -0.015em; margin: 0; }
+.admin-section { margin-top: 40px; padding-top: 32px; border-top: 1px solid var(--rule); }
+.admin-section-head { margin-bottom: 20px; }
+.admin-section-head h2 { font-size: 20px; font-weight: 600; margin: 0; color: var(--ink-2); }
 .admin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
 .card { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: 18px 20px; box-shadow: var(--shadow-2); }
 .card.span-2 { grid-column: span 2; }
@@ -932,6 +961,7 @@ input { font: inherit; color: inherit; }
   font-size: 11px; letter-spacing: 0; text-transform: none;
   font-weight: 400; color: var(--ink-3); font-style: italic;
 }
+
 .text-input {
   width: 100%;
   height: 38px;

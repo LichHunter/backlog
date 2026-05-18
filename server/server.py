@@ -19,9 +19,10 @@ from urllib.parse import parse_qs, urlparse
 
 
 class Config:
-    def __init__(self, directory: Path, port: int, web_dir: Path | None = None):
+    def __init__(self, directory: Path, port: int, web_dir: Path | None = None, workspace: bool = False):
         self.dir = directory.resolve()
         self.port = port
+        self.workspace = workspace
         self.master = self.dir / "backlog.md"
         self.backups_dir = self.dir / "backups"
         self.stats_file = self.dir / "stats.jsonl"
@@ -29,7 +30,26 @@ class Config:
 
     def ensure_dirs(self):
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.backups_dir.mkdir(exist_ok=True)
+        if not self.workspace:
+            self.backups_dir.mkdir(exist_ok=True)
+
+    def get_project_dir(self, project_name: str) -> Path:
+        return self.dir / project_name
+
+    def get_project_master(self, project_name: str) -> Path:
+        return self.get_project_dir(project_name) / "backlog.md"
+
+    def get_project_backups_dir(self, project_name: str) -> Path:
+        return self.get_project_dir(project_name) / "backups"
+
+    def discover_projects(self) -> list:
+        if not self.workspace:
+            return []
+        projects = []
+        for d in self.dir.iterdir():
+            if d.is_dir() and (d / "backlog.md").exists():
+                projects.append(d.name)
+        return sorted(projects)
 
 
 CONFIG: Config = None  # type: ignore[assignment]
@@ -163,9 +183,72 @@ def restore_backup(name: str) -> dict:
     if not src.exists():
         return {"ok": False, "error": "Backup not found"}
     text = src.read_text(encoding="utf-8")
-    parse_markdown_sections(text)  # validate readable
+    parse_markdown_sections(text)
     shutil.copy2(src, CONFIG.master)
     return {"ok": True}
+
+
+def read_project_master(project: str) -> dict:
+    master = CONFIG.get_project_master(project)
+    if not master.exists():
+        return {"content": build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|"), "checksum": "", "size": 0}
+    text = master.read_text(encoding="utf-8")
+    entries, history, meta = parse_markdown_sections(text)
+    checksum = meta["checksum"] if meta else ""
+    return {"content": text, "checksum": checksum, "size": len(text.encode("utf-8"))}
+
+
+def write_project_master(project: str, content: str) -> dict:
+    project_dir = CONFIG.get_project_dir(project)
+    master = CONFIG.get_project_master(project)
+    backups_dir = CONFIG.get_project_backups_dir(project)
+    
+    project_dir.mkdir(parents=True, exist_ok=True)
+    backups_dir.mkdir(exist_ok=True)
+    
+    tmp = master.with_suffix(".md.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    parse_markdown_sections(content)
+    
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    millis = datetime.now(timezone.utc).strftime("%f")[:3]
+    backup_name = f"backlog_{timestamp}-{millis}.md"
+    shutil.copy2(tmp, backups_dir / backup_name)
+    
+    tmp.replace(master)
+    _, _, meta = parse_markdown_sections(content)
+    return {"ok": True, "checksum": meta["checksum"] if meta else "", "saved": meta["saved"] if meta else ""}
+
+
+def list_project_backups(project: str) -> list:
+    backups_dir = CONFIG.get_project_backups_dir(project)
+    if not backups_dir.exists():
+        return []
+    result = []
+    for f in sorted(backups_dir.glob("backlog_*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+        text = f.read_text(encoding="utf-8")
+        _, _, meta = parse_markdown_sections(text)
+        result.append({
+            "name": f.name,
+            "size": f.stat().st_size,
+            "timestamp": datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat(),
+            "valid": meta is not None,
+        })
+    return result
+
+
+def create_project(name: str) -> dict:
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '-', name.strip())
+    if not safe_name:
+        return {"ok": False, "error": "Invalid project name"}
+    project_dir = CONFIG.get_project_dir(safe_name)
+    if project_dir.exists():
+        return {"ok": False, "error": "Project already exists"}
+    project_dir.mkdir(parents=True)
+    master = CONFIG.get_project_master(safe_name)
+    blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
+    master.write_text(blank, encoding="utf-8")
+    return {"ok": True, "name": safe_name}
 
 
 # ---------------------------------------------------------------------------
@@ -284,17 +367,64 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/health":
-            info = read_master()
-            backups = list_backups()
-            self._json_response({
-                "status": "ok",
-                "lastSave": info.get("meta", {}).get("saved", "") if isinstance(info, dict) else "",
-                "lastBackup": backups[0]["timestamp"] if backups else "",
-                "masterSize": CONFIG.master.stat().st_size if CONFIG.master.exists() else 0,
-                "backupCount": len(backups),
-                "masterPath": str(CONFIG.master),
-                "backupsPath": str(CONFIG.backups_dir),
-            })
+            if CONFIG.workspace:
+                projects = CONFIG.discover_projects()
+                self._json_response({
+                    "status": "ok",
+                    "workspace": True,
+                    "workspacePath": str(CONFIG.dir),
+                    "projectCount": len(projects),
+                    "projects": projects,
+                })
+            else:
+                info = read_master()
+                backups = list_backups()
+                self._json_response({
+                    "status": "ok",
+                    "workspace": False,
+                    "lastSave": info.get("meta", {}).get("saved", "") if isinstance(info, dict) else "",
+                    "lastBackup": backups[0]["timestamp"] if backups else "",
+                    "masterSize": CONFIG.master.stat().st_size if CONFIG.master.exists() else 0,
+                    "backupCount": len(backups),
+                    "masterPath": str(CONFIG.master),
+                    "backupsPath": str(CONFIG.backups_dir),
+                })
+            return
+
+        if path == "/api/projects" and CONFIG.workspace:
+            projects = []
+            for name in CONFIG.discover_projects():
+                info = read_project_master(name)
+                projects.append({
+                    "id": name,
+                    "name": name,
+                    "size": info["size"],
+                    "checksum": info["checksum"],
+                })
+            self._json_response({"projects": projects})
+            return
+
+        if path.startswith("/api/projects/") and CONFIG.workspace:
+            parts = path[len("/api/projects/"):].split("/")
+            project_name = parts[0]
+            sub_path = "/".join(parts[1:]) if len(parts) > 1 else ""
+            
+            if sub_path == "backlog" or sub_path == "":
+                info = read_project_master(project_name)
+                client_checksum = qs.get("checksum", [None])[0]
+                if client_checksum and client_checksum == info["checksum"]:
+                    self.send_response(304)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    return
+                self._json_response({"content": info["content"], "checksum": info["checksum"]})
+                return
+            
+            if sub_path == "backups":
+                self._json_response({"backups": list_project_backups(project_name)})
+                return
+            
+            self._json_response({"error": "Not found"}, 404)
             return
 
         if path == "/api/backlog":
@@ -328,6 +458,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/api/projects" and CONFIG.workspace:
+            body = self._read_json_body()
+            name = body.get("name", "")
+            result = create_project(name)
+            self._json_response(result)
+            return
+
+        if path.startswith("/api/projects/") and CONFIG.workspace:
+            parts = path[len("/api/projects/"):].split("/")
+            project_name = parts[0]
+            sub_path = "/".join(parts[1:]) if len(parts) > 1 else ""
+            
+            if sub_path == "backlog" or sub_path == "":
+                body = self._read_json_body()
+                content = body.get("content", "")
+                result = write_project_master(project_name, content)
+                self._json_response(result)
+                return
+            
+            self._json_response({"error": "Not found"}, 404)
+            return
 
         if path == "/api/backlog":
             body = self._read_json_body()
@@ -391,22 +543,31 @@ def main():
     parser.add_argument("--dir", type=str, default=str(Path(__file__).parent),
                         help="Directory for backlog.md, backups/, stats.jsonl (default: same dir as server.py)")
     parser.add_argument("--web-dir", type=str, default=None, help="Directory to serve static files from (default: webapp/)")
+    parser.add_argument("--workspace", action="store_true",
+                        help="Multi-project mode: treat --dir as workspace with project subfolders")
     args = parser.parse_args()
 
     global CONFIG
     web_dir = Path(args.web_dir) if args.web_dir else None
-    CONFIG = Config(Path(args.dir), args.port, web_dir)
+    CONFIG = Config(Path(args.dir), args.port, web_dir, workspace=args.workspace)
     CONFIG.ensure_dirs()
 
-    if not CONFIG.master.exists():
-        blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
-        CONFIG.master.write_text(blank, encoding="utf-8")
-        print(f"[init] Created blank {CONFIG.master}")
+    if args.workspace:
+        projects = CONFIG.discover_projects()
+        print(f"[init] Workspace mode: {len(projects)} project(s) found")
+        for p in projects:
+            print(f"       - {p}")
+    else:
+        if not CONFIG.master.exists():
+            blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
+            CONFIG.master.write_text(blank, encoding="utf-8")
+            print(f"[init] Created blank {CONFIG.master}")
 
     server = HTTPServer(("0.0.0.0", args.port), Handler)
     print(f"[server] Listening on http://0.0.0.0:{args.port}")
     print(f"[server] Data dir: {CONFIG.dir}")
     print(f"[server] Web dir:  {CONFIG.web_dir}")
+    print(f"[server] Mode: {'workspace (multi-project)' if args.workspace else 'single file'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

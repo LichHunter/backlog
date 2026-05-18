@@ -41,7 +41,7 @@ function DialogHeader({ eyebrow, title, onClose, id }) {
 }
 
 // --- Item editor (used for both edit and add) ---
-function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] }) {
+function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [], isMultiProject = false }) {
   const [title, setTitle] = useStateD("");
   const [priority, setPriority] = useStateD("P2");
   const [status, setStatus] = useStateD("open");
@@ -50,7 +50,10 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
   const [tagInput, setTagInput] = useStateD("");
   const [reason, setReason] = useStateD("");
   const [progress, setProgress] = useStateD(0);
+  const [createAsProject, setCreateAsProject] = useStateD(false);
   const titleRef = useRefD(null);
+
+  const showProjectOption = isMultiProject && mode === "add";
 
   useEffectD(() => {
     if (!open) return;
@@ -62,6 +65,7 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
     setTagInput("");
     setReason(initial?.reason || "");
     setProgress(initial?.progress ?? 0);
+    setCreateAsProject(false);
     setTimeout(() => titleRef.current?.focus(), 50);
   }, [open, initial]);
 
@@ -85,7 +89,8 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
       due: due || null,
       tags,
       reason: status === "blocked" ? reason.trim() || null : null,
-      progress: outProgress
+      progress: outProgress,
+      createAsProject: showProjectOption && createAsProject
     });
   };
 
@@ -197,6 +202,30 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               allTags={recentTags}
             />
           </div>
+
+          {showProjectOption && (
+            <div className="field">
+              <label className="field-label">Type</label>
+              <div className="status-grid" style={{gridTemplateColumns: '1fr 1fr'}}>
+                <button type="button"
+                  className={`status-card ${!createAsProject ? 'active' : ''}`}
+                  onClick={() => setCreateAsProject(false)}>
+                  <span className="status-card-icon" style={{background: 'var(--bg-3)'}}>
+                    <Icon name="check" size={16}/>
+                  </span>
+                  <span className="status-card-label">Item</span>
+                </button>
+                <button type="button"
+                  className={`status-card ${createAsProject ? 'active' : ''}`}
+                  onClick={() => setCreateAsProject(true)}>
+                  <span className="status-card-icon" style={{background: 'var(--bg-3)'}}>
+                    <Icon name="folder" size={16}/>
+                  </span>
+                  <span className="status-card-label">Project</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="dlg-foot">

@@ -12,13 +12,15 @@ function loadLocalState() {
   } catch { return null; }
 }
 
-// Only UI state (expanded rows, tweaks) is persisted locally.
-// Backlog data always lives in backlog.md — never in localStorage.
-function saveLocalState(expandedMap, tweaks) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify({ expandedMap, tweaks })); } catch { /* quota / private mode */ }
+function saveLocalState(expandedMap, tweaks, multiProjectMode = null) {
+  try { 
+    const state = { expandedMap, tweaks };
+    if (multiProjectMode !== null) state.multiProjectMode = multiProjectMode;
+    else if (loadLocalState()?.multiProjectMode) state.multiProjectMode = loadLocalState().multiProjectMode;
+    localStorage.setItem(LS_KEY, JSON.stringify(state)); 
+  } catch { /* quota */ }
 }
 
-// Empty starting state — used when there is no saved data and no seed data loaded.
 function buildEmptyData() {
   const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => ({ day, count: 0 }));
   return {
@@ -42,9 +44,66 @@ function buildEmptyData() {
   };
 }
 
+function buildMergedDataFromProjects(projectsData) {
+  const allEntries = [];
+  const allHistory = [];
+  const statusMix = { open: 0, 'in-progress': 0, blocked: 0, postponed: 0, done: 0, cancelled: 0 };
+
+  for (const proj of projectsData) {
+    for (const entry of proj.entries) {
+      entry._projectId = proj.id;
+      entry._projectName = proj.name;
+    }
+    allEntries.push(...proj.entries);
+    allHistory.push(...proj.history.map(h => ({ ...h, _projectId: proj.id })));
+    walkTree(proj.entries, it => { statusMix[it.status] = (statusMix[it.status] || 0) + 1; });
+  }
+
+  allHistory.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+  const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => ({ day, count: 0 }));
+  return {
+    entries: allEntries,
+    history: allHistory,
+    meta: { saved: null, checksum: '—', entryCount: allEntries.length, historyCount: allHistory.length },
+    health: {
+      integrityOk: projectsData.every(p => p.checksumOk),
+      lastSave: null, lastBackup: null,
+      masterSize: 0, backupDirSize: 0, backupCount: 0,
+      statsSize: 0, historySize: 0, historyOldest: null,
+      mode: 'Multi-project workspace',
+      projectCount: projectsData.length,
+    },
+    stats: {
+      createdThisWeek: 0, completedThisWeek: 0, avgInProgressDays: null,
+      mostActiveProject: projectsData[0]?.name || '—',
+      completionByDay: days.map(d => ({ ...d })),
+      createdByDay: days.map(d => ({ ...d })),
+      statusMix,
+    },
+    backups: [],
+  };
+}
+
+function filterProjectEntries(entries, filters, sortMode) {
+  const f = { ...filters, text: filters.text?.trim() || '' };
+  const noFilters = !f.statuses?.length && !f.priorities?.length && !f.tags?.length && !f.dueRange && !f.text;
+  let tree = noFilters ? entries : filterTree(entries, f);
+  tree = structuredClone(tree);
+  if (sortMode === 'priority') {
+    function sortRecur(list) {
+      list.sort((a, b) => PRIORITIES.indexOf(a.priority) - PRIORITIES.indexOf(b.priority));
+      list.forEach(it => it.children?.length && sortRecur(it.children));
+    }
+    sortRecur(tree);
+  }
+  if (f.scope === 'top') tree = tree.map(it => ({ ...it, children: [] }));
+  return tree;
+}
+
 function App() {
   const [data, setData]             = useStateMain(buildEmptyData);
-  const [storageMode, setStorageMode] = useStateMain('local'); // 'api' | 'direct' | 'local'
+  const [storageMode, setStorageMode] = useStateMain('local');
   const [isLoading, setIsLoading]   = useStateMain(true);
   const [view, setView]             = useStateMain('backlog');
   const [filters, setFilters]       = useStateMain({ statuses: [], priorities: [], tags: [], dueRange: null, scope: 'all', text: '' });
@@ -56,6 +115,11 @@ function App() {
   const [itemDialog, setItemDialog] = useStateMain(null);
   const [confirm, setConfirm]       = useStateMain(null);
   const [needsConnect, setNeedsConnect] = useStateMain(false);
+
+  const [isMultiProject, setIsMultiProject] = useStateMain(false);
+  const [projects, setProjects]     = useStateMain([]);
+  const [projectExpandedMap, setProjectExpandedMap] = useStateMain({});
+  const [workspaceName, setWorkspaceName] = useStateMain(null);
 
   const TWEAK_DEFAULTS = { accent_hue: 35, density: 'comfortable', show_ids: false, paper_texture: true, status_style: 'color', sort_mode: 'priority', theme: 'system' };
   const [tweaks, setTweak] = useTweaks({ ...TWEAK_DEFAULTS, ...(loadLocalState()?.tweaks ?? {}) });
@@ -103,6 +167,28 @@ function App() {
 
         if (mode === 'browser') {
           if (cancelled) return;
+          
+          const savedState = loadLocalState();
+          if (savedState?.multiProjectMode === 'browser-multiproject') {
+            const projectsData = await BrowserMultiProjectBackend.loadAll();
+            if (projectsData.length > 0) {
+              setProjects(projectsData);
+              setIsMultiProject(true);
+              setStorageMode('browser-multiproject');
+              setWorkspaceName('Browser Storage');
+              const mergedData = buildMergedDataFromProjects(projectsData);
+              setData(mergedData);
+              const em = {};
+              projectsData.forEach(p => { walkTree(p.entries, it => { em[it.id] = !it.collapsed; }); });
+              setExpandedMap(savedState.expandedMap || em);
+              const pem = {};
+              projectsData.forEach(p => { pem[p.id] = true; });
+              setProjectExpandedMap(pem);
+              setIsLoading(false);
+              return;
+            }
+          }
+          
           await applyStorageData(mode, () => cancelled);
           return;
         }
@@ -182,7 +268,6 @@ function App() {
     setTimeout(() => setToast(t => (t && Date.now() - t.t >= 2400) ? null : t), 2500);
   };
 
-  // ---- Connect to backlog.md (user-triggered, called from the connect banner) ----
   const handleConnect = async () => {
     try {
       await Storage.connect();
@@ -219,8 +304,170 @@ function App() {
     }
   };
 
-  // ---- Real async save ----
-  const triggerSave = (label) => {
+  const handleConnectWorkspace = async () => {
+    try {
+      await MultiProjectBackend.connect();
+      const projectsData = await MultiProjectBackend.loadAll();
+      if (projectsData.length === 0) {
+        showToast('No projects found. Create a subfolder with backlog.md to start.', 'warn');
+        return;
+      }
+      setProjects(projectsData);
+      setIsMultiProject(true);
+      setStorageMode('multiproject');
+      setWorkspaceName(MultiProjectBackend.workspaceHandle?.name || 'Workspace');
+
+      const mergedData = buildMergedDataFromProjects(projectsData);
+      setData(mergedData);
+
+      const em = {};
+      projectsData.forEach(p => {
+        walkTree(p.entries, it => { em[it.id] = !it.collapsed; });
+      });
+      setExpandedMap(em);
+
+      const pem = {};
+      projectsData.forEach(p => { pem[p.id] = true; });
+      setProjectExpandedMap(pem);
+
+      setNeedsConnect(false);
+      showToast(`Loaded ${projectsData.length} project${projectsData.length > 1 ? 's' : ''}`);
+    } catch (e) {
+      showToast('Workspace connect failed: ' + e.message, 'err');
+    }
+  };
+
+  const handleCreateProject = async () => {
+    const name = prompt('Project name:');
+    if (!name || !name.trim()) return;
+    const safeName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
+    try {
+      const backend = storageMode === 'browser-multiproject' ? BrowserMultiProjectBackend : MultiProjectBackend;
+      await backend.createProject(safeName);
+      const projectsData = await backend.loadAll();
+      setProjects(projectsData);
+      const mergedData = buildMergedDataFromProjects(projectsData);
+      setData(mergedData);
+      setProjectExpandedMap(prev => ({ ...prev, [safeName]: true }));
+      showToast(`Created project: ${safeName}`);
+    } catch (e) {
+      showToast('Failed to create project: ' + e.message, 'err');
+    }
+  };
+
+  const handleEnableBrowserMultiProject = async () => {
+    try {
+      const projectsData = await BrowserMultiProjectBackend.loadAll();
+      
+      if (projectsData.length === 0 && data.entries.length > 0) {
+        const importExisting = window.confirm('Import current items into a "default" project?');
+        if (importExisting) {
+          await BrowserMultiProjectBackend.createProject('default');
+          const content = await Parser.serialize({ entries: data.entries, history: data.history });
+          await BrowserMultiProjectBackend.saveProject('default', content);
+        }
+      }
+      
+      const freshData = await BrowserMultiProjectBackend.loadAll();
+      if (freshData.length === 0) {
+        await BrowserMultiProjectBackend.createProject('default');
+      }
+      
+      const finalData = await BrowserMultiProjectBackend.loadAll();
+      setProjects(finalData);
+      setIsMultiProject(true);
+      setStorageMode('browser-multiproject');
+      setWorkspaceName('Browser Storage');
+
+      const mergedData = buildMergedDataFromProjects(finalData);
+      setData(mergedData);
+
+      const em = {};
+      finalData.forEach(p => { walkTree(p.entries, it => { em[it.id] = !it.collapsed; }); });
+      setExpandedMap(em);
+
+      const pem = {};
+      finalData.forEach(p => { pem[p.id] = true; });
+      setProjectExpandedMap(pem);
+
+      saveLocalState(expandedMap, tweaks, 'browser-multiproject');
+      showToast(`Multi-project enabled: ${finalData.length} project${finalData.length !== 1 ? 's' : ''}`);
+    } catch (e) {
+      showToast('Failed to enable multi-project: ' + e.message, 'err');
+    }
+  };
+
+  const handleRenameProject = async (projectId) => {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+    const newName = prompt('New project name:', proj.name);
+    if (!newName || newName.trim() === proj.name) return;
+    
+    try {
+      const backend = storageMode === 'browser-multiproject' ? BrowserMultiProjectBackend : MultiProjectBackend;
+      const result = await backend.renameProject(projectId, newName);
+      if (!result.ok) throw new Error(result.error);
+      
+      const projectsData = await backend.loadAll();
+      setProjects(projectsData);
+      const mergedData = buildMergedDataFromProjects(projectsData);
+      setData(mergedData);
+      setProjectExpandedMap(prev => {
+        const next = { ...prev };
+        delete next[projectId];
+        next[result.newId] = true;
+        return next;
+      });
+      showToast(`Renamed to: ${result.newId}`);
+    } catch (e) {
+      showToast('Rename failed: ' + e.message, 'err');
+    }
+  };
+
+  const handleRemoveProject = (projectId) => {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+    const itemCount = countAll(proj.entries);
+    const isBrowserMode = storageMode === 'browser-multiproject';
+    
+    setConfirm({
+      title: 'Delete project?',
+      message: <>Delete <strong>{proj.name}</strong>?</>,
+      detail: (
+        <span className="muted">
+          {isBrowserMode 
+            ? `This will permanently delete ${itemCount} item${itemCount !== 1 ? 's' : ''} from browser storage.`
+            : `The folder and ${itemCount} item${itemCount !== 1 ? 's' : ''} will remain on disk.`}
+        </span>
+      ),
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          if (isBrowserMode) {
+            await BrowserMultiProjectBackend.removeProject(projectId);
+          }
+          const newProjects = projects.filter(p => p.id !== projectId);
+          setProjects(newProjects);
+          const newEntries = data.entries.filter(e => e._projectId !== projectId);
+          const newHistory = data.history.filter(h => h._projectId !== projectId);
+          setData(prev => ({ ...prev, entries: newEntries, history: newHistory }));
+          setProjectExpandedMap(prev => {
+            const next = { ...prev };
+            delete next[projectId];
+            return next;
+          });
+          setConfirm(null);
+          showToast(`Deleted: ${proj.name}`);
+        } catch (e) {
+          showToast('Delete failed: ' + e.message, 'err');
+          setConfirm(null);
+        }
+      },
+    });
+  };
+
+  const triggerSave = (label, projectId = null) => {
     isDirtyRef.current = true;
     setSaveState(prev => ({ ...prev, status: 'saving' }));
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -229,10 +476,21 @@ function App() {
       const d  = latestData.current;
       const em = latestExpandedMap.current;
       try {
-        if (Storage.isConnected()) {
+        if (isMultiProject) {
+          const backend = storageMode === 'browser-multiproject' ? BrowserMultiProjectBackend : MultiProjectBackend;
+          const dirtyProjects = projectId 
+            ? [projectId] 
+            : [...new Set(d.entries.map(e => e._projectId).filter(Boolean))];
+          
+          for (const pId of dirtyProjects) {
+            const projectEntries = d.entries.filter(e => e._projectId === pId);
+            const projectHistory = d.history.filter(h => h._projectId === pId);
+            const content = await Parser.serialize({ entries: projectEntries, history: projectHistory });
+            await backend.saveProject(pId, content);
+          }
+        } else if (Storage.isConnected()) {
           const content = await Parser.serialize({ entries: d.entries, history: d.history });
           await Storage.save(content);
-          // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
           const cm = content.match(/checksum:\s*(sha256:[a-f0-9]+)/);
           if (cm) SyncPoller.lastChecksum = cm[1];
         }
@@ -276,33 +534,39 @@ function App() {
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
   }, [data]);
 
-  // ---- Mutations ----
   const onMutate = {
     setStatus: (id, status) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it || it.status === status) return;
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'status_changed', details: `${it.status} → ${status}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'status_changed', details: `${it.status} → ${status}` };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
         const wasDone = it.status === 'done';
         it.status = status;
         if (status !== 'blocked') it.reason = null;
-        if (status === 'done')                    it.progress = 100;
+        if (status === 'done') it.progress = 100;
         else if (wasDone && (it.progress ?? 0) >= 100) it.progress = 75;
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     setPriority: (id, priority) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it || it.priority === priority) return;
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'priority_changed', details: `${it.priority} → ${priority}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'priority_changed', details: `${it.priority} → ${priority}` };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
         it.priority = priority;
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     setProgress: (id, progress) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it) return;
@@ -310,44 +574,52 @@ function App() {
         if ((it.progress ?? 0) === v) return;
         const before = it.progress ?? 0;
         it.progress = v;
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'progress_changed', details: `${before}% → ${v}%` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'progress_changed', details: `${before}% → ${v}%` };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     moveWithinPriority: (id, dir) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const r = findParentList(d.entries, id);
         if (!r) return;
-        const i  = r.list.findIndex(x => x.id === id);
+        const i = r.list.findIndex(x => x.id === id);
         if (i < 0) return;
         const me = r.list[i];
         let j = i + dir;
         while (j >= 0 && j < r.list.length && r.list[j].priority !== me.priority) j += dir;
         if (j < 0 || j >= r.list.length) return;
         [r.list[i], r.list[j]] = [r.list[j], r.list[i]];
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'item_reordered', details: `moved ${dir < 0 ? 'up' : 'down'}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'item_reordered', details: `moved ${dir < 0 ? 'up' : 'down'}` };
+        if (me._projectId) histEntry._projectId = me._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     reorder: (draggedId, targetId) => {
+      const item = findItem(data.entries, draggedId);
       mutate(d => {
         const src = findParentList(d.entries, draggedId);
         const tgt = findParentList(d.entries, targetId);
         if (!src || !tgt || src.list !== tgt.list) return;
         const draggedIdx = src.list.findIndex(x => x.id === draggedId);
-        const dragged    = src.list[draggedIdx];
+        const dragged = src.list[draggedIdx];
         src.list.splice(draggedIdx, 1);
         const newTargetIdx = tgt.list.findIndex(x => x.id === targetId);
         tgt.list.splice(newTargetIdx, 0, dragged);
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: draggedId, action: 'item_reordered', details: `dropped before ${targetId}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: draggedId, action: 'item_reordered', details: `dropped before ${targetId}` };
+        if (dragged._projectId) histEntry._projectId = dragged._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave('Reordered');
+      triggerSave('Reordered', item?._projectId);
     },
 
     addChild: (parentId) => setItemDialog({ mode: 'add-child', parentId, initial: null }),
-    addRoot:  ()         => setItemDialog({ mode: 'add',       parentId: null, initial: null }),
+    addRoot:  (projectId = null) => setItemDialog({ mode: 'add', parentId: null, initial: null, projectId }),
 
     editItem: (id) => {
       const it = findItem(data.entries, id);
@@ -366,6 +638,7 @@ function App() {
         confirmLabel: 'Delete',
         danger: true,
         onConfirm: () => {
+          const projectId = it._projectId;
           mutate(d => {
             function remove(list) {
               const i = list.findIndex(x => x.id === id);
@@ -374,30 +647,59 @@ function App() {
               return false;
             }
             remove(d.entries);
-            d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'item_deleted', details: `final: ${it.status}` });
+            const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'item_deleted', details: `final: ${it.status}` };
+            if (projectId) histEntry._projectId = projectId;
+            d.history.unshift(histEntry);
           });
           setConfirm(null);
-          triggerSave('Deleted');
+          triggerSave('Deleted', projectId);
         },
       });
     },
   };
 
-  const submitItemDialog = (vals) => {
+  const submitItemDialog = async (vals) => {
+    if (vals.createAsProject && isMultiProject) {
+      const safeName = vals.title.replace(/[^a-zA-Z0-9_-]/g, '-');
+      try {
+        const backend = storageMode === 'browser-multiproject' ? BrowserMultiProjectBackend : MultiProjectBackend;
+        await backend.createProject(safeName);
+        const projectsData = await backend.loadAll();
+        setProjects(projectsData);
+        const mergedData = buildMergedDataFromProjects(projectsData);
+        setData(mergedData);
+        setProjectExpandedMap(prev => ({ ...prev, [safeName]: true }));
+        showToast(`Created project: ${safeName}`);
+      } catch (e) {
+        showToast('Failed to create project: ' + e.message, 'err');
+      }
+      setItemDialog(null);
+      return;
+    }
+
     if (itemDialog.mode === 'edit') {
+      const editedItem = findItem(data.entries, itemDialog.itemId);
       mutate(d => {
         const x = findItem(d.entries, itemDialog.itemId);
         if (!x) return;
         const before = { priority: x.priority, status: x.status };
         Object.assign(x, vals);
-        if (before.status !== vals.status)
-          d.history.unshift({ timestamp: new Date().toISOString(), itemId: x.id, action: 'status_changed', details: `${before.status} → ${vals.status}` });
-        if (before.priority !== vals.priority)
-          d.history.unshift({ timestamp: new Date().toISOString(), itemId: x.id, action: 'priority_changed', details: `${before.priority} → ${vals.priority}` });
+        if (before.status !== vals.status) {
+          const histEntry = { timestamp: new Date().toISOString(), itemId: x.id, action: 'status_changed', details: `${before.status} → ${vals.status}` };
+          if (x._projectId) histEntry._projectId = x._projectId;
+          d.history.unshift(histEntry);
+        }
+        if (before.priority !== vals.priority) {
+          const histEntry = { timestamp: new Date().toISOString(), itemId: x.id, action: 'priority_changed', details: `${before.priority} → ${vals.priority}` };
+          if (x._projectId) histEntry._projectId = x._projectId;
+          d.history.unshift(histEntry);
+        }
       });
-      triggerSave('Saved');
+      triggerSave('Saved', editedItem?._projectId);
     } else {
       const newId = 'n-' + Math.random().toString(36).slice(2, 8);
+      let targetProjectId = itemDialog.projectId || projects[0]?.id || null;
+      
       mutate(d => {
         const node = { id: newId, level: 1, ...vals, children: [], collapsed: false };
         if (itemDialog.mode === 'add-child' && itemDialog.parentId) {
@@ -405,23 +707,50 @@ function App() {
           if (parent) {
             parent.children = parent.children || [];
             node.level = (parent.level || 1) + 1;
+            if (parent._projectId) {
+              node._projectId = parent._projectId;
+              node._projectName = parent._projectName;
+              targetProjectId = parent._projectId;
+            }
             parent.children.push(node);
             setExpandedMap(m => ({ ...m, [parent.id]: true }));
           }
         } else {
+          if (isMultiProject && targetProjectId) {
+            node._projectId = targetProjectId;
+            node._projectName = projects.find(p => p.id === targetProjectId)?.name;
+          }
           d.entries.push(node);
         }
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: newId, action: 'item_created', details: vals.title });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: newId, action: 'item_created', details: vals.title };
+        if (targetProjectId) histEntry._projectId = targetProjectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave('Added');
+      triggerSave('Added', targetProjectId);
     }
     setItemDialog(null);
   };
 
   const setExpanded = (id, val) => setExpandedMap(m => ({ ...m, [id]: val }));
+  const setProjectExpanded = (projectId, val) => setProjectExpandedMap(m => ({ ...m, [projectId]: val }));
 
   const tagsList = useMemoMain(() => allTags(data.entries),          [data]);
   const counts   = useMemoMain(() => countByStatus(data.entries),    [data]);
+
+  const entriesByProject = useMemoMain(() => {
+    if (!isMultiProject) return null;
+    const grouped = {};
+    for (const proj of projects) {
+      grouped[proj.id] = { id: proj.id, name: proj.name, entries: [] };
+    }
+    for (const entry of data.entries) {
+      const pId = entry._projectId;
+      if (pId && grouped[pId]) {
+        grouped[pId].entries.push(entry);
+      }
+    }
+    return Object.values(grouped);
+  }, [data.entries, projects, isMultiProject]);
 
   const filtered = useMemoMain(() => {
     const f = { ...filters, text: filters.text?.trim() || '' };
@@ -498,7 +827,49 @@ function App() {
   };
 
   // ---- Import entries from parsed content ----
-  const handleImport = ({ entries, history }) => {
+  const handleImport = async ({ entries, history }) => {
+    const projectIds = [...new Set(entries.map(e => e._projectId).filter(Boolean))];
+    const hasProjectSections = projectIds.length > 0;
+    
+    if (hasProjectSections && !isMultiProject) {
+      setIsMultiProject(true);
+      setStorageMode('browser-multiproject');
+      setWorkspaceName('Browser Storage');
+      localStorage.setItem('multiProjectMode', 'browser-multiproject');
+    }
+
+    if (hasProjectSections || isMultiProject) {
+      const backend = BrowserMultiProjectBackend;
+      
+      for (const pid of projectIds) {
+        try { await backend.createProject(pid); } catch {}
+      }
+      
+      if (projectIds.length === 0 && entries.length > 0) {
+        const defaultProject = projects[0]?.id || 'default';
+        try { await backend.createProject(defaultProject); } catch {}
+        entries.forEach(e => { e._projectId = defaultProject; e._projectName = defaultProject; });
+        history.forEach(h => { h._projectId = defaultProject; });
+        projectIds.push(defaultProject);
+      }
+
+      for (const pid of projectIds) {
+        const projectEntries = entries.filter(e => e._projectId === pid);
+        const projectHistory = history.filter(h => h._projectId === pid);
+        const content = await Parser.serialize({ entries: projectEntries, history: projectHistory });
+        await backend.saveProject(pid, content);
+      }
+      
+      const projectsData = await backend.loadAll();
+      setProjects(projectsData);
+      const mergedData = buildMergedDataFromProjects(projectsData);
+      mergedData.history.unshift({ timestamp: new Date().toISOString(), itemId: 'system', action: 'imported', details: `${entries.length} top-level entries` });
+      setData(mergedData);
+      setImportExportOpen(false);
+      showToast('Imported');
+      return;
+    }
+
     mutate(d => {
       d.entries = entries;
       if (history?.length) d.history = [...history, ...d.history];
@@ -548,7 +919,7 @@ function App() {
         </div>
       )}
 
-      {storageMode === 'browser' && (
+      {storageMode === 'browser' && !isMultiProject && (
         <div className="banner info" style={{gap:8}}>
           <Icon name="folder" size={14}/>
           <span>
@@ -558,14 +929,20 @@ function App() {
         </div>
       )}
 
-      {needsConnect && (
+      {needsConnect && !isMultiProject && (
         <div className="banner info">
           <Icon name="folder" size={14}/>
-          No <code className="mono">backlog.md</code> connected — grant one-time folder access, then reloads are silent.
-          <button className="btn-primary" style={{marginLeft:'auto',flexShrink:0,fontSize:12,padding:'3px 10px'}}
-            onClick={handleConnect}>Open folder…</button>
+          <span style={{flex:1}}>
+            Connect to a folder containing your <code className="mono">backlog.md</code> file.
+          </span>
+          <button className="btn-secondary" style={{flexShrink:0,fontSize:12,padding:'3px 10px',marginRight:8}}
+            onClick={handleConnect}>Single file</button>
+          <button className="btn-primary" style={{flexShrink:0,fontSize:12,padding:'3px 10px'}}
+            onClick={handleConnectWorkspace}>Workspace (multi-project)</button>
         </div>
       )}
+
+
 
       {showWarning && (
         <div className="banner warn">
@@ -624,6 +1001,66 @@ function App() {
                   <div className="empty-glyph">∅</div>
                   <div>{hasFilters ? 'No items match these filters.' : 'No items yet. Press n or click "+ New item" to start.'}</div>
                 </div>
+              ) : isMultiProject && entriesByProject ? (
+                <div className="project-sections">
+                  {entriesByProject.map(proj => {
+                    const projFiltered = filterProjectEntries(proj.entries, filters, tweaks.sort_mode);
+                    const isExpanded = projectExpandedMap[proj.id] !== false;
+                    const itemCount = countAll(proj.entries);
+                    return (
+                      <div key={proj.id} className="project-section">
+                        <div 
+                          className={`project-section-header ${isExpanded ? 'expanded' : 'collapsed'}`}
+                          onClick={() => setProjectExpanded(proj.id, !isExpanded)}
+                        >
+                          <span className="project-section-chevron">{isExpanded ? '▼' : '▶'}</span>
+                          <span className="project-section-name">{proj.name}</span>
+                          <span className="project-section-count">{itemCount} item{itemCount !== 1 ? 's' : ''}</span>
+                          <div className="project-section-actions">
+                            <button 
+                              className="project-section-btn"
+                              onClick={(e) => { e.stopPropagation(); onMutate.addRoot(proj.id); }}
+                              title={`Add item to ${proj.name}`}
+                            >
+                              <Icon name="plus" size={11}/>
+                            </button>
+                            <button
+                              className="project-section-btn"
+                              onClick={(e) => { e.stopPropagation(); handleRenameProject(proj.id); }}
+                              title="Rename project"
+                            >
+                              <Icon name="edit" size={11}/>
+                            </button>
+                            <button
+                              className="project-section-btn project-section-btn-danger"
+                              onClick={(e) => { e.stopPropagation(); handleRemoveProject(proj.id); }}
+                              title="Remove project from workspace"
+                            >
+                              <Icon name="trash" size={11}/>
+                            </button>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="project-section-content">
+                            {projFiltered.length === 0 ? (
+                              <div className="project-empty">No items in this project</div>
+                            ) : (
+                              <BacklogTree
+                                items={projFiltered}
+                                expandedMap={expandedMap}
+                                setExpanded={setExpanded}
+                                onMutate={onMutate}
+                                query={filters.text?.trim() || ''}
+                                statusStyle={tweaks.status_style}
+                                manualOrder={tweaks.sort_mode === 'manual'}
+                              />
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
                 <BacklogTree
                   items={filtered}
@@ -644,6 +1081,10 @@ function App() {
           history={data.history}
           tweaks={tweaks}
           setTweak={setTweak}
+          storageMode={storageMode}
+          isMultiProject={isMultiProject}
+          projectCount={projects.length}
+          onEnableMultiProject={handleEnableBrowserMultiProject}
           onClose={() => setView('backlog')}
           onForceSave={() => triggerSave('Force-saved')}
           onForceBackup={() => triggerSave('Force-backed up')}
@@ -674,6 +1115,7 @@ function App() {
         recentTags={recentTags}
         onClose={() => setItemDialog(null)}
         onSubmit={submitItemDialog}
+        isMultiProject={isMultiProject}
       />
 
       <ConfirmDialog
@@ -786,9 +1228,8 @@ function ViewChips({ filters, setFilters }) {
   );
 }
 
-// ----- Header -----
 function Header({ view, setView, saveState, saveLabel, storageMode, searchValue, onSearch, onOpenImportExport }) {
-  const modeIcon = storageMode === 'api' ? '⚡' : storageMode === 'direct' ? '📁' : storageMode === 'browser' ? '🌐' : '💾';
+  const modeIcon = storageMode === 'api' ? '⚡' : storageMode === 'direct' ? '📁' : storageMode === 'multiproject' ? '📂' : storageMode === 'browser-multiproject' ? '🗂️' : storageMode === 'browser' ? '🌐' : '💾';
   return (
     <header className="header">
       <div className="brand">

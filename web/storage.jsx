@@ -54,13 +54,20 @@ const Parser = {
       }
     }
 
-    // Parse history table
     const history = [];
+    let historyProjectId = null;
     for (const line of historyText.split('\n')) {
+      const projectMatch = line.match(/^<!--\s*SECTION:\s*([^>]+?)\s*-->/);
+      if (projectMatch && projectMatch[1] !== 'HISTORY') {
+        historyProjectId = projectMatch[1].trim();
+        continue;
+      }
       if (!line.trim().startsWith('|')) continue;
       const parts = line.split('|').map(s => s.trim()).filter(Boolean);
       if (parts.length >= 4 && parts[0] !== 'Timestamp' && !parts[0].match(/^-+$/)) {
-        history.push({ timestamp: parts[0], itemId: parts[1], action: parts[2], details: parts[3] });
+        const entry = { timestamp: parts[0], itemId: parts[1], action: parts[2], details: parts[3] };
+        if (historyProjectId) entry._projectId = historyProjectId;
+        history.push(entry);
       }
     }
 
@@ -71,8 +78,15 @@ const Parser = {
 
     const entries = [];
     const stack = [{ children: entries, depth: -1, level: 0 }];
+    let currentProjectId = null;
 
     for (const line of entriesText.split('\n')) {
+      const projectMatch = line.match(/^<!--\s*SECTION:\s*([^>]+?)\s*-->/);
+      if (projectMatch && projectMatch[1] !== 'ENTRIES') {
+        currentProjectId = projectMatch[1].trim();
+        continue;
+      }
+
       const m = line.match(/^(\s*)[-*]\s*\[([ x!>/\-])\]\s*(.*)$/);
       if (!m) continue;
 
@@ -109,6 +123,10 @@ const Parser = {
         collapsed: false,
         children: [],
       };
+      if (currentProjectId) {
+        item._projectId = currentProjectId;
+        item._projectName = currentProjectId;
+      }
       stack[stack.length - 1].children.push(item);
       stack.push({ children: item.children, depth, level: item.level });
     }
@@ -117,8 +135,44 @@ const Parser = {
   },
 
   async serialize(data) {
-    const entriesText = this._serializeEntries(data.entries);
-    const historyText = this._serializeHistory(data.history);
+    const hasProjects = data.entries.some(e => e._projectId);
+    let entriesText, historyText;
+
+    if (hasProjects) {
+      const projectGroups = {};
+      for (const entry of data.entries) {
+        const pid = entry._projectId || '_ungrouped';
+        (projectGroups[pid] = projectGroups[pid] || []).push(entry);
+      }
+      const projectSections = [];
+      for (const [pid, items] of Object.entries(projectGroups)) {
+        if (pid === '_ungrouped') continue;
+        projectSections.push(`<!-- SECTION: ${pid} -->\n\n${this._serializeEntries(items)}`);
+      }
+      if (projectGroups._ungrouped) {
+        projectSections.unshift(this._serializeEntries(projectGroups._ungrouped));
+      }
+      entriesText = projectSections.join('\n\n');
+
+      const historyGroups = {};
+      for (const h of data.history) {
+        const pid = h._projectId || '_ungrouped';
+        (historyGroups[pid] = historyGroups[pid] || []).push(h);
+      }
+      const historySections = [];
+      for (const [pid, rows] of Object.entries(historyGroups)) {
+        if (pid === '_ungrouped') continue;
+        historySections.push(`<!-- SECTION: ${pid} -->\n\n${this._serializeHistory(rows)}`);
+      }
+      if (historyGroups._ungrouped) {
+        historySections.unshift(this._serializeHistory(historyGroups._ungrouped));
+      }
+      historyText = historySections.join('\n\n');
+    } else {
+      entriesText = this._serializeEntries(data.entries);
+      historyText = this._serializeHistory(data.history);
+    }
+
     const payload  = entriesText + '\n' + historyText;
     const buf      = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
     const hash     = 'sha256:' + Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -504,10 +558,440 @@ const BrowserStorageBackend = {
   },
 };
 
+// ---- Browser Multi-Project Backend (IndexedDB for Firefox/Safari) ----
+const BrowserMultiProjectBackend = {
+  _DB_NAME: 'pb-multiproject-browser',
+  _STORE: 'data',
+  _PROJECTS_KEY: 'projects',
+  projects: [],
+
+  async detect() {
+    return typeof indexedDB !== 'undefined';
+  },
+
+  _openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(this._DB_NAME, 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore(this._STORE);
+      req.onsuccess = e => resolve(e.target.result);
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  async _get(key) {
+    const db = await this._openDB();
+    return new Promise(resolve => {
+      const tx = db.transaction(this._STORE, 'readonly');
+      const get = tx.objectStore(this._STORE).get(key);
+      get.onsuccess = () => resolve(get.result);
+      get.onerror = () => resolve(null);
+    });
+  },
+
+  async _set(key, value) {
+    const db = await this._openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this._STORE, 'readwrite');
+      tx.objectStore(this._STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+
+  async _delete(key) {
+    const db = await this._openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this._STORE, 'readwrite');
+      tx.objectStore(this._STORE).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+
+  async discoverProjects() {
+    const projectList = await this._get(this._PROJECTS_KEY) || [];
+    this.projects = projectList.map(name => ({ id: name, name }));
+    return this.projects;
+  },
+
+  async createProject(name) {
+    const safeName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
+    if (!safeName) throw new Error('Invalid project name');
+    
+    const projectList = await this._get(this._PROJECTS_KEY) || [];
+    if (projectList.includes(safeName)) throw new Error('Project already exists');
+    
+    projectList.push(safeName);
+    await this._set(this._PROJECTS_KEY, projectList);
+    
+    const emptyContent = `# Backlog
+
+<!-- SECTION: ENTRIES -->
+
+
+
+<!-- SECTION: HISTORY -->
+
+| Timestamp | Item ID | Action | Details |
+|-----------|---------|--------|---------|
+
+<!-- SECTION: INTEGRITY -->
+
+<!-- saved: ${new Date().toISOString().slice(0, 19)}Z | checksum: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 | entries: 0 | history: 0 -->
+`;
+    await this._set(`project:${safeName}`, emptyContent);
+    return { id: safeName, name: safeName };
+  },
+
+  async loadProject(projectId) {
+    const content = await this._get(`project:${projectId}`) || '';
+    return { content, checksum: '' };
+  },
+
+  async saveProject(projectId, content) {
+    const oldContent = await this._get(`project:${projectId}`);
+    if (oldContent) {
+      const backups = await this._get(`backups:${projectId}`) || [];
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      backups.unshift({ name: `backlog_${ts}.md`, content: oldContent, timestamp: new Date().toISOString() });
+      if (backups.length > 10) backups.length = 10;
+      await this._set(`backups:${projectId}`, backups);
+    }
+    await this._set(`project:${projectId}`, content);
+    return { ok: true };
+  },
+
+  async loadAll() {
+    this.projects = await this.discoverProjects();
+    const results = [];
+    for (const project of this.projects) {
+      try {
+        const { content } = await this.loadProject(project.id);
+        const parsed = await Parser.parse(content);
+        results.push({
+          id: project.id,
+          name: project.name,
+          entries: parsed.entries,
+          history: parsed.history,
+          meta: parsed.meta,
+          checksumOk: parsed.checksumOk,
+        });
+      } catch (e) {
+        results.push({
+          id: project.id,
+          name: project.name,
+          entries: [],
+          history: [],
+          meta: null,
+          checksumOk: false,
+          error: e.message,
+        });
+      }
+    }
+    return results;
+  },
+
+  async listBackups(projectId) {
+    const backups = await this._get(`backups:${projectId}`) || [];
+    return backups.map(b => ({
+      name: b.name,
+      size: new TextEncoder().encode(b.content || '').length,
+      timestamp: b.timestamp,
+      valid: (b.content || '').includes('<!-- SECTION: INTEGRITY -->'),
+    }));
+  },
+
+  async restoreBackup(projectId, name) {
+    const backups = await this._get(`backups:${projectId}`) || [];
+    const backup = backups.find(b => b.name === name);
+    if (!backup) return { ok: false, error: 'Backup not found' };
+    await this._set(`project:${projectId}`, backup.content);
+    return { ok: true };
+  },
+
+  async renameProject(oldId, newName) {
+    const safeName = newName.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
+    if (!safeName || safeName === oldId) return { ok: false, error: 'Invalid name' };
+    
+    const projectList = await this._get(this._PROJECTS_KEY) || [];
+    if (!projectList.includes(oldId)) return { ok: false, error: 'Project not found' };
+    if (projectList.includes(safeName)) return { ok: false, error: 'Name already exists' };
+    
+    const content = await this._get(`project:${oldId}`);
+    const backups = await this._get(`backups:${oldId}`);
+    
+    await this._set(`project:${safeName}`, content);
+    if (backups) await this._set(`backups:${safeName}`, backups);
+    
+    await this._delete(`project:${oldId}`);
+    await this._delete(`backups:${oldId}`);
+    
+    const newList = projectList.filter(p => p !== oldId);
+    newList.push(safeName);
+    newList.sort();
+    await this._set(this._PROJECTS_KEY, newList);
+    
+    return { ok: true, newId: safeName };
+  },
+
+  async removeProject(projectId) {
+    const projectList = await this._get(this._PROJECTS_KEY) || [];
+    const newList = projectList.filter(p => p !== projectId);
+    await this._set(this._PROJECTS_KEY, newList);
+    await this._delete(`project:${projectId}`);
+    await this._delete(`backups:${projectId}`);
+    return { ok: true };
+  },
+
+  async getHealthInfo() {
+    return {
+      browserStorage: true,
+      multiProject: true,
+      projectCount: this.projects.length,
+    };
+  },
+};
+
+// ---- Multi-Project Backend (workspace/project1/backlog.md, workspace/project2/backlog.md) ----
+const MultiProjectBackend = {
+  workspaceHandle: null,
+  projects: [],
+  _DB_NAME: 'pb-multiproject-v1',
+  _STORE: 'handles',
+  _KEY: 'workspace',
+
+  async detect() {
+    return typeof window.showDirectoryPicker === 'function';
+  },
+
+  async tryAutoConnect() {
+    this.workspaceHandle = await this._loadHandle();
+    if (!this.workspaceHandle) return false;
+    try {
+      return (await this.workspaceHandle.queryPermission({ mode: 'readwrite' })) === 'granted';
+    } catch { return false; }
+  },
+
+  async connect() {
+    let handle = await this._loadHandle();
+    if (!handle) {
+      handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      await this._saveHandle(handle);
+    }
+    const perm = await handle.requestPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') throw new Error('Permission denied');
+    this.workspaceHandle = handle;
+  },
+
+  _loadHandle() {
+    return new Promise(res => {
+      const req = indexedDB.open(this._DB_NAME, 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore(this._STORE);
+      req.onsuccess = e => {
+        const get = e.target.result.transaction(this._STORE, 'readonly').objectStore(this._STORE).get(this._KEY);
+        get.onsuccess = () => res(get.result || null);
+        get.onerror = () => res(null);
+      };
+      req.onerror = () => res(null);
+    });
+  },
+
+  _saveHandle(handle) {
+    return new Promise((res, rej) => {
+      const req = indexedDB.open(this._DB_NAME, 1);
+      req.onsuccess = e => {
+        const tx = e.target.result.transaction(this._STORE, 'readwrite');
+        tx.objectStore(this._STORE).put(handle, this._KEY);
+        tx.oncomplete = () => res();
+        tx.onerror = () => rej(tx.error);
+      };
+    });
+  },
+
+  async discoverProjects() {
+    if (!this.workspaceHandle) return [];
+    const projects = [];
+    for await (const [name, handle] of this.workspaceHandle.entries()) {
+      if (handle.kind !== 'directory') continue;
+      try {
+        await handle.getFileHandle('backlog.md');
+        projects.push({ id: name, name, dirHandle: handle });
+      } catch { /* no backlog.md */ }
+    }
+    return projects.sort((a, b) => a.name.localeCompare(b.name));
+  },
+
+  async createProject(name) {
+    if (!this.workspaceHandle) throw new Error('No workspace connected');
+    const dirHandle = await this.workspaceHandle.getDirectoryHandle(name, { create: true });
+    const fileHandle = await dirHandle.getFileHandle('backlog.md', { create: true });
+    const w = await fileHandle.createWritable();
+    const emptyContent = `# Backlog
+
+<!-- SECTION: ENTRIES -->
+
+
+
+<!-- SECTION: HISTORY -->
+
+| Timestamp | Item ID | Action | Details |
+|-----------|---------|--------|---------|
+
+<!-- SECTION: INTEGRITY -->
+
+<!-- saved: ${new Date().toISOString().slice(0, 19)}Z | checksum: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 | entries: 0 | history: 0 -->
+`;
+    await w.write(emptyContent);
+    await w.close();
+    return { id: name, name, dirHandle };
+  },
+
+  async loadProject(projectId) {
+    const project = this.projects.find(p => p.id === projectId);
+    if (!project) throw new Error(`Project ${projectId} not found`);
+    try {
+      const fileHandle = await project.dirHandle.getFileHandle('backlog.md');
+      const file = await fileHandle.getFile();
+      const content = await file.text();
+      return { content, checksum: '' };
+    } catch {
+      return { content: '', checksum: '' };
+    }
+  },
+
+  async saveProject(projectId, content) {
+    const project = this.projects.find(p => p.id === projectId);
+    if (!project) throw new Error(`Project ${projectId} not found`);
+    
+    const fileHandle = await project.dirHandle.getFileHandle('backlog.md', { create: true });
+    const w = await fileHandle.createWritable();
+    await w.write(content);
+    await w.close();
+
+    try {
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      const backupsDir = await project.dirHandle.getDirectoryHandle('backups', { create: true });
+      const backupHandle = await backupsDir.getFileHandle(`backlog_${ts}.md`, { create: true });
+      const bw = await backupHandle.createWritable();
+      await bw.write(content);
+      await bw.close();
+    } catch { /* backup non-fatal */ }
+
+    return { ok: true };
+  },
+
+  async loadAll() {
+    this.projects = await this.discoverProjects();
+    const results = [];
+    for (const project of this.projects) {
+      try {
+        const { content } = await this.loadProject(project.id);
+        const parsed = await Parser.parse(content);
+        results.push({
+          id: project.id,
+          name: project.name,
+          entries: parsed.entries,
+          history: parsed.history,
+          meta: parsed.meta,
+          checksumOk: parsed.checksumOk,
+        });
+      } catch (e) {
+        results.push({
+          id: project.id,
+          name: project.name,
+          entries: [],
+          history: [],
+          meta: null,
+          checksumOk: false,
+          error: e.message,
+        });
+      }
+    }
+    return results;
+  },
+
+  async listBackups(projectId) {
+    const project = this.projects.find(p => p.id === projectId);
+    if (!project) return [];
+    try {
+      const dir = await project.dirHandle.getDirectoryHandle('backups', { create: true });
+      const backups = [];
+      for await (const [name, h] of dir.entries()) {
+        if (!name.startsWith('backlog_') || !name.endsWith('.md')) continue;
+        const f = await h.getFile();
+        const text = await f.text();
+        backups.push({
+          name,
+          size: f.size,
+          timestamp: new Date(f.lastModified).toISOString(),
+          valid: text.includes('<!-- SECTION: INTEGRITY -->'),
+        });
+      }
+      return backups.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    } catch { return []; }
+  },
+
+  async restoreBackup(projectId, name) {
+    const project = this.projects.find(p => p.id === projectId);
+    if (!project) return { ok: false, error: 'Project not found' };
+    try {
+      const dir = await project.dirHandle.getDirectoryHandle('backups');
+      const h = await dir.getFileHandle(name);
+      const text = await (await h.getFile()).text();
+      await this.saveProject(projectId, text);
+      return { ok: true };
+    } catch (e) { return { ok: false, error: e.message }; }
+  },
+
+  async getHealthInfo() {
+    return {
+      workspaceName: this.workspaceHandle?.name ?? null,
+      projectCount: this.projects.length,
+      multiProject: true,
+    };
+  },
+
+  async renameProject(oldId, newName) {
+    const safeName = newName.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
+    if (!safeName || safeName === oldId) return { ok: false, error: 'Invalid name' };
+    
+    const project = this.projects.find(p => p.id === oldId);
+    if (!project) return { ok: false, error: 'Project not found' };
+
+    try {
+      const newDirHandle = await this.workspaceHandle.getDirectoryHandle(safeName, { create: true });
+      
+      const oldFileHandle = await project.dirHandle.getFileHandle('backlog.md');
+      const content = await (await oldFileHandle.getFile()).text();
+      const newFileHandle = await newDirHandle.getFileHandle('backlog.md', { create: true });
+      const w = await newFileHandle.createWritable();
+      await w.write(content);
+      await w.close();
+
+      try {
+        const oldBackups = await project.dirHandle.getDirectoryHandle('backups');
+        const newBackups = await newDirHandle.getDirectoryHandle('backups', { create: true });
+        for await (const [name, handle] of oldBackups.entries()) {
+          if (handle.kind !== 'file') continue;
+          const backupContent = await (await handle.getFile()).text();
+          const newBackupHandle = await newBackups.getFileHandle(name, { create: true });
+          const bw = await newBackupHandle.createWritable();
+          await bw.write(backupContent);
+          await bw.close();
+        }
+      } catch { /* no backups to copy */ }
+
+      return { ok: true, newId: safeName };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  },
+};
+
 // ---- Storage — detect backend and delegate ----
 const Storage = {
   backend: null,
-  mode: 'local', // 'api' | 'direct' | 'local'
+  mode: 'local', // 'api' | 'direct' | 'multiproject' | 'browser' | 'local'
 
   async detect() {
     if (await ApiBackend.detect()) {
@@ -697,6 +1181,8 @@ Object.assign(window, {
   ApiBackend,
   DirectBackend,
   BrowserStorageBackend,
+  BrowserMultiProjectBackend,
+  MultiProjectBackend,
   Storage,
   SyncPoller,
   buildDataFromStorage,

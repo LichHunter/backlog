@@ -461,12 +461,14 @@ function AppearanceCard({ tweaks, setTweak }) {
   );
 }
 
-function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup }) {
+function AdminPage({ data, onClose, history, tweaks, setTweak, storageMode, isMultiProject, projectCount, onEnableMultiProject, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup }) {
   const [previewBackup, setPreviewBackup] = useState(null);
 
   const counts = countByStatus(data.entries);
   const total = countAll(data.entries);
   const maxStat = Math.max(1, ...Object.values(data.stats.statusMix));
+  
+  const canEnableMultiProject = storageMode === 'browser' && !isMultiProject;
 
   return (
     <div className="admin">
@@ -684,6 +686,35 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onFo
         </section>
       </div>
 
+      <div className="admin-section">
+        <div className="admin-section-head">
+          <h2>Settings</h2>
+        </div>
+        <div className="admin-grid">
+          <section className="card">
+            <div className="card-head"><h3>Multi-project mode</h3></div>
+            <div style={{ fontSize: 13, color: 'var(--ink-2)', marginBottom: 12, lineHeight: 1.5 }}>
+              {isMultiProject ? (
+                <>Enabled with <strong>{projectCount}</strong> project{projectCount !== 1 ? 's' : ''}. Create new projects from the "New item" dialog.</>
+              ) : (
+                <>Organize items into separate projects. Each project has its own backlog and history.</>
+              )}
+            </div>
+            {canEnableMultiProject && (
+              <button className="btn-primary" onClick={onEnableMultiProject} style={{ width: '100%' }}>
+                Enable multi-project mode
+              </button>
+            )}
+            {!canEnableMultiProject && !isMultiProject && (
+              <div style={{ fontSize: 12, color: 'var(--ink-3)', padding: '8px 12px', background: 'var(--bg-2)', borderRadius: 6 }}>
+                {storageMode === 'direct' || storageMode === 'multiproject' 
+                  ? 'Use "Workspace (multi-project)" when connecting.'
+                  : 'Requires browser storage or File System Access API.'}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }
