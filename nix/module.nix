@@ -8,6 +8,7 @@
 let
   cfg = config.services.personal-backlog;
   package = pkgs.callPackage ./package.nix { };
+  isDefaultUser = cfg.user == "backlog";
 in
 {
   options.services.personal-backlog = {
@@ -35,7 +36,7 @@ in
     user = lib.mkOption {
       type = lib.types.str;
       default = "backlog";
-      description = "User account under which the service runs.";
+      description = "User account under which the service runs. Set to your username to access home directories.";
     };
 
     group = lib.mkOption {
@@ -52,14 +53,14 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    users.users.${cfg.user} = {
+    users.users.${cfg.user} = lib.mkIf isDefaultUser {
       isSystemUser = true;
       group = cfg.group;
       home = cfg.dataDir;
       createHome = true;
     };
 
-    users.groups.${cfg.group} = { };
+    users.groups.${cfg.group} = lib.mkIf isDefaultUser { };
 
     systemd.services.personal-backlog = {
       description = "Personal Backlog Task Manager";
@@ -75,14 +76,14 @@ in
         Restart = "on-failure";
         RestartSec = 5;
 
-        StateDirectory = "personal-backlog";
-        StateDirectoryMode = "0750";
+        StateDirectory = lib.mkIf isDefaultUser "personal-backlog";
+        StateDirectoryMode = lib.mkIf isDefaultUser "0750";
 
         NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
+        ProtectSystem = lib.mkIf isDefaultUser "strict";
+        ProtectHome = lib.mkIf isDefaultUser true;
         PrivateTmp = true;
-        ReadWritePaths = [ cfg.dataDir ];
+        ReadWritePaths = lib.mkIf isDefaultUser [ cfg.dataDir ];
       };
     };
 
