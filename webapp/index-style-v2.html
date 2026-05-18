@@ -8360,18 +8360,22 @@ function ImportExportDialog({
       className: "dlg-body"
     }, /*#__PURE__*/React.createElement("p", {
       className: "dlg-msg"
-    }, "Importing ", entryCount, " item", entryCount !== 1 ? 's' : '', ". Choose where to save:"), /*#__PURE__*/React.createElement("div", {
-      className: "dlg-field"
-    }, /*#__PURE__*/React.createElement("label", null, "File path"), /*#__PURE__*/React.createElement("input", {
+    }, "Importing ", entryCount, " item", entryCount !== 1 ? 's' : '', ". Choose where to save:"), /*#__PURE__*/React.createElement("label", {
+      className: "field-label"
+    }, "File path"), /*#__PURE__*/React.createElement("input", {
       ref: pathInputRef,
       type: "text",
       value: importPath,
       onChange: e => setImportPath(e.target.value),
       placeholder: "/path/to/project/backlog.md",
-      className: "dlg-input"
+      className: "text-input",
+      style: {
+        width: '100%',
+        marginBottom: 6
+      }
     }), /*#__PURE__*/React.createElement("div", {
       className: "dlg-hint"
-    }, "Will create file if it doesn't exist"))), /*#__PURE__*/React.createElement("div", {
+    }, "Appends /backlog.md if path is a directory")), /*#__PURE__*/React.createElement("div", {
       className: "dlg-foot"
     }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("div", {
       className: "dlg-foot-actions"

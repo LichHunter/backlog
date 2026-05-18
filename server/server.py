@@ -270,7 +270,7 @@ def create_project(name: str) -> dict:
 def register_project(file_path: str, name: str = None) -> dict:
     path = Path(file_path).expanduser().resolve()
     if not path.name.endswith(".md"):
-        return {"ok": False, "error": "File must be a .md file"}
+        path = path / "backlog.md"
     
     project_name = name or path.parent.name
     safe_name = re.sub(r'[^a-zA-Z0-9_-]', '-', project_name.strip())

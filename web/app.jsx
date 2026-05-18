@@ -1556,18 +1556,17 @@ function ImportExportDialog({ open, data, storageMode, onClose, onImport }) {
         <form onSubmit={e => { e.preventDefault(); submitRegistryImport(); }}>
           <div className="dlg-body">
             <p className="dlg-msg">Importing {entryCount} item{entryCount !== 1 ? 's' : ''}. Choose where to save:</p>
-            <div className="dlg-field">
-              <label>File path</label>
-              <input
-                ref={pathInputRef}
-                type="text"
-                value={importPath}
-                onChange={e => setImportPath(e.target.value)}
-                placeholder="/path/to/project/backlog.md"
-                className="dlg-input"
-              />
-              <div className="dlg-hint">Will create file if it doesn't exist</div>
-            </div>
+            <label className="field-label">File path</label>
+            <input
+              ref={pathInputRef}
+              type="text"
+              value={importPath}
+              onChange={e => setImportPath(e.target.value)}
+              placeholder="/path/to/project/backlog.md"
+              className="text-input"
+              style={{ width: '100%', marginBottom: 6 }}
+            />
+            <div className="dlg-hint">Appends /backlog.md if path is a directory</div>
           </div>
           <div className="dlg-foot">
             <span/>
