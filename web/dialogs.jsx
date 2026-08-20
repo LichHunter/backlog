@@ -9,21 +9,35 @@ function RichTextEditor({ value, onChange, placeholder = "Add details...", colla
   const [showCopyMenu, setShowCopyMenu] = useStateD(false);
   const [copyMenuPos, setCopyMenuPos] = useStateD({ x: 0, y: 0 });
   const toolbarRef = useRefD(null);
+  const isEditingRef = useRefD(false);
+  const initializedRef = useRefD(false);
 
-  // Initialize editor content
+  // Initialize editor content only when value changes externally (not from our own edits)
   useEffectD(() => {
-    if (editorRef.current && value !== undefined) {
+    if (editorRef.current && value !== undefined && !isEditingRef.current) {
       const html = MarkdownUtils.toHtml(value || '');
-      if (editorRef.current.innerHTML !== html) {
+      // Only set innerHTML on first load or when value is reset externally
+      if (!initializedRef.current || editorRef.current.innerHTML === '') {
         editorRef.current.innerHTML = html;
+        initializedRef.current = true;
       }
+    }
+  }, [value]);
+
+  // Reset initialized flag when dialog closes/opens (value becomes null/undefined)
+  useEffectD(() => {
+    if (value === null || value === undefined) {
+      initializedRef.current = false;
     }
   }, [value]);
 
   const handleInput = useCallbackD(() => {
     if (editorRef.current) {
+      isEditingRef.current = true;
       const md = MarkdownUtils.toMarkdown(editorRef.current.innerHTML);
       onChange?.(md || null);
+      // Reset editing flag after a short delay to allow state updates
+      setTimeout(() => { isEditingRef.current = false; }, 100);
     }
   }, [onChange]);
 
@@ -37,6 +51,34 @@ function RichTextEditor({ value, onChange, placeholder = "Add details...", colla
     if (e.key === 'Tab') {
       e.preventDefault();
       execCmd('insertText', '  ');
+    }
+    // Auto-convert "- " or "* " at line start to bullet list
+    if (e.key === ' ') {
+      const sel = window.getSelection();
+      if (sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        const node = range.startContainer;
+        if (node.nodeType === Node.TEXT_NODE) {
+          const text = node.textContent;
+          const offset = range.startOffset;
+          // Check if cursor is right after "- " or "* " at line start
+          if (offset === 1 && (text[0] === '-' || text[0] === '*')) {
+            e.preventDefault();
+            // Remove the "-" or "*" character
+            node.textContent = text.slice(1);
+            // Convert to bullet list
+            execCmd('insertUnorderedList');
+            return;
+          }
+          // Also check for "1. " to convert to numbered list
+          if (offset === 2 && text[0] === '1' && text[1] === '.') {
+            e.preventDefault();
+            node.textContent = text.slice(2);
+            execCmd('insertOrderedList');
+            return;
+          }
+        }
+      }
     }
     // Ctrl/Cmd + B/I/K shortcuts
     if (e.ctrlKey || e.metaKey) {
