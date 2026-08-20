@@ -103,16 +103,19 @@ const Parser = {
       const raw    = m[3].trim();
 
       let title = raw, due = null, reason = null, tags = [], priority = 'P1', progress = 0;
+      let archived = null, restorePath = null;
 
       const metaM = raw.match(/^(.*?)\s*\*\((.*)\)\*\s*$/);
       if (metaM) {
         title = metaM[1].trim();
         for (const p of metaM[2].split(',').map(s => s.trim())) {
-          if      (p.startsWith('due:'))       due      = p.slice(4).trim();
-          else if (p.startsWith('reason:'))    reason   = p.slice(7).trim();
-          else if (p.startsWith('tags:'))      tags     = p.slice(5).trim().split(/\s+/).filter(Boolean);
-          else if (p.startsWith('priority:'))  priority = p.slice(9).trim().toUpperCase();
-          else if (p.startsWith('progress:'))  progress = parseInt(p.slice(9).trim(), 10) || 0;
+          if      (p.startsWith('due:'))          due         = p.slice(4).trim();
+          else if (p.startsWith('reason:'))       reason      = p.slice(7).trim();
+          else if (p.startsWith('tags:'))         tags        = p.slice(5).trim().split(/\s+/).filter(Boolean);
+          else if (p.startsWith('priority:'))     priority    = p.slice(9).trim().toUpperCase();
+          else if (p.startsWith('progress:'))     progress    = parseInt(p.slice(9).trim(), 10) || 0;
+          else if (p.startsWith('archived:'))     archived    = p.slice(9).trim();
+          else if (p.startsWith('restore-path:')) restorePath = p.slice(13).trim();
         }
       }
 
@@ -131,6 +134,8 @@ const Parser = {
         collapsed: false,
         children: [],
         body: null,
+        archived: archived || null,
+        restorePath: restorePath || null,
       };
       stack[stack.length - 1].children.push(item);
       stack.push({ children: item.children, depth, level: item.level, item });
@@ -163,6 +168,8 @@ const Parser = {
       if (it.tags?.length) meta.push(`tags: ${it.tags.join(' ')}`);
       if (it.priority && it.priority !== 'P1') meta.push(`priority: ${it.priority}`);
       if ((it.progress ?? 0) > 0) meta.push(`progress: ${it.progress}`);
+      if (it.archived)     meta.push(`archived: ${it.archived}`);
+      if (it.restorePath)  meta.push(`restore-path: ${it.restorePath}`);
       const metaStr = meta.length ? ` *(${meta.join(', ')})*` : '';
       const prefix  = it.priority ? `[${it.priority}] ` : '';
       lines.push(`${indent}- [${GLYPH[it.status] || ' '}] ${prefix}${it.title}${metaStr}`);
@@ -249,8 +256,37 @@ const ApiBackend = {
         statsSize: 0,
         masterPath: j.masterPath || '',
         backupsPath: j.backupsPath || '',
+        archiveExists: j.archiveExists || false,
+        archiveSize: j.archiveSize || 0,
+        archivePath: j.archivePath || '',
       };
     } catch { return {}; }
+  },
+
+  async loadArchive() {
+    const r = await fetch('/api/archive');
+    if (!r.ok) throw new Error('API archive load failed: ' + r.status);
+    return r.json(); // { content, checksum, exists }
+  },
+
+  async saveArchive(backlogContent, archiveContent) {
+    const r = await fetch('/api/archive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backlog: backlogContent, archive: archiveContent }),
+    });
+    if (!r.ok) throw new Error('API archive save failed: ' + r.status);
+    return r.json();
+  },
+
+  async restoreFromArchive(backlogContent, archiveContent) {
+    const r = await fetch('/api/archive/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backlog: backlogContent, archive: archiveContent }),
+    });
+    if (!r.ok) throw new Error('API archive restore failed: ' + r.status);
+    return r.json();
   },
 };
 
@@ -376,8 +412,31 @@ const DirectBackend = {
   async getHealthInfo() {
     try {
       const f = await (await this.dirHandle.getFileHandle('backlog.md')).getFile();
-      return { masterSize: f.size, statsSize: 0, dirName: this.dirHandle?.name ?? null };
-    } catch { return { masterSize: 0, statsSize: 0, dirName: this.dirHandle?.name ?? null }; }
+      let archiveExists = false, archiveSize = 0;
+      try {
+        const af = await (await this.dirHandle.getFileHandle('archive.md')).getFile();
+        archiveExists = true;
+        archiveSize = af.size;
+      } catch {}
+      return { masterSize: f.size, statsSize: 0, dirName: this.dirHandle?.name ?? null, archiveExists, archiveSize };
+    } catch { return { masterSize: 0, statsSize: 0, dirName: this.dirHandle?.name ?? null, archiveExists: false, archiveSize: 0 }; }
+  },
+
+  async loadArchive() {
+    const content = await this._readFile('archive.md');
+    return { content: content || '', checksum: '', exists: !!content };
+  },
+
+  async saveArchive(backlogContent, archiveContent) {
+    await this._writeFile('backlog.md', backlogContent);
+    await this._writeFile('archive.md', archiveContent);
+    return { ok: true };
+  },
+
+  async restoreFromArchive(backlogContent, archiveContent) {
+    await this._writeFile('backlog.md', backlogContent);
+    await this._writeFile('archive.md', archiveContent);
+    return { ok: true };
   },
 };
 
@@ -518,6 +577,7 @@ const BrowserStorageBackend = {
   async getHealthInfo() {
     try {
       const content = await this._get(this._CONTENT_KEY) || '';
+      const archiveContent = await this._get('archive') || '';
       const estimate = await navigator.storage?.estimate?.() || {};
       const persisted = await navigator.storage?.persisted?.() || false;
       return {
@@ -527,9 +587,40 @@ const BrowserStorageBackend = {
         persisted,
         quota: estimate.quota,
         usage: estimate.usage,
+        archiveExists: !!archiveContent,
+        archiveSize: new TextEncoder().encode(archiveContent).length,
       };
     } catch {
-      return { masterSize: 0, statsSize: 0, browserStorage: true, persisted: false };
+      return { masterSize: 0, statsSize: 0, browserStorage: true, persisted: false, archiveExists: false, archiveSize: 0 };
+    }
+  },
+
+  async loadArchive() {
+    try {
+      const content = await this._get('archive') || '';
+      return { content, checksum: '', exists: !!content };
+    } catch {
+      return { content: '', checksum: '', exists: false };
+    }
+  },
+
+  async saveArchive(backlogContent, archiveContent) {
+    try {
+      await this._set(this._CONTENT_KEY, backlogContent);
+      await this._set('archive', archiveContent);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  },
+
+  async restoreFromArchive(backlogContent, archiveContent) {
+    try {
+      await this._set(this._CONTENT_KEY, backlogContent);
+      await this._set('archive', archiveContent);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
     }
   },
 };
@@ -583,6 +674,9 @@ const Storage = {
   async listBackups()        { return this.backend?.listBackups()           ?? [];   },
   async restoreBackup(name)  { return this.backend?.restoreBackup(name)     ?? { ok: false }; },
   async getHealthInfo()      { return this.backend?.getHealthInfo?.()       ?? {};   },
+  async loadArchive()        { return this.backend?.loadArchive?.()         ?? { content: '', exists: false }; },
+  async saveArchive(backlog, archive) { return this.backend?.saveArchive?.(backlog, archive) ?? { ok: false }; },
+  async restoreFromArchive(backlog, archive) { return this.backend?.restoreFromArchive?.(backlog, archive) ?? { ok: false }; },
 };
 
 // ---- SyncPoller — detect external file changes (5s interval) ----

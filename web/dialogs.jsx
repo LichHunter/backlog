@@ -305,8 +305,8 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
       <form onSubmit={submit}>
         <DialogHeader
           id="dlg-item-title"
-          eyebrow={mode === "edit" ? "Edit item" : (mode === "add-child" ? "Add sub-item" : "New item")}
-          title={mode === "edit" ? "Edit details" : "Create item"}
+          eyebrow={mode === "view" ? "Archived item" : mode === "edit" ? "Edit item" : (mode === "add-child" ? "Add sub-item" : "New item")}
+          title={mode === "view" ? "View details (read-only)" : mode === "edit" ? "Edit details" : "Create item"}
           onClose={onClose}
         />
 
@@ -320,17 +320,22 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               onChange={(e) => setTitle(e.target.value)}
               placeholder="What needs to happen?"
               required
+              readOnly={mode === "view"}
             />
           </div>
 
           <div className="field">
-            <label className="field-label">Details <span className="field-hint">rich text, supports markdown</span></label>
-            <RichTextEditor
-              value={body}
-              onChange={setBody}
-              placeholder="Add notes, context, or details..."
-              collapsed={!body}
-            />
+            <label className="field-label">Details <span className="field-hint">{mode === "view" ? "read-only" : "rich text, supports markdown"}</span></label>
+            {mode === "view" ? (
+              <div className="rte-readonly" dangerouslySetInnerHTML={{ __html: MarkdownUtils.toHtml(body || '') }} />
+            ) : (
+              <RichTextEditor
+                value={body}
+                onChange={setBody}
+                placeholder="Add notes, context, or details..."
+                collapsed={!body}
+              />
+            )}
           </div>
 
           <div className="field-row">
@@ -340,7 +345,8 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
                 {PRIORITIES.map(p => (
                   <button type="button" key={p}
                     className={`seg-btn pri-${p} ${priority === p ? "active" : ""}`}
-                    onClick={() => setPriority(p)}>
+                    onClick={() => mode !== "view" && setPriority(p)}
+                    disabled={mode === "view"}>
                     {p === "P0" && <span className="p0-dot"/>}
                     {p}
                   </button>
@@ -349,7 +355,7 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
             </div>
             <div className="field">
               <label className="field-label">Due</label>
-              <input className="text-input" type="date" value={due} onChange={(e) => setDue(e.target.value)}/>
+              <input className="text-input" type="date" value={due} onChange={(e) => setDue(e.target.value)} readOnly={mode === "view"}/>
             </div>
           </div>
 
@@ -359,7 +365,8 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               {STATUSES.map(s => (
                 <button type="button" key={s.key}
                   className={`status-card ${status === s.key ? "active" : ""}`}
-                  onClick={() => setStatus(s.key)}>
+                  onClick={() => mode !== "view" && setStatus(s.key)}
+                  disabled={mode === "view"}>
                   <span className={`status-card-icon status-${s.key}`}>
                     <StatusIcon status={s.key} size={16}/>
                   </span>
@@ -374,18 +381,18 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               <label className="field-label">
                 Completion
                 <span className="field-hint">
-                  {status === "done"
+                  {mode === "view" ? "read-only" : status === "done"
                     ? "locked at 100% while marked done"
                     : "rough estimate — set 100% to mark done"}
                 </span>
               </label>
               <div className="progress-row">
-                <div className={`seg progress-seg ${status === "done" ? "locked" : ""}`}>
+                <div className={`seg progress-seg ${status === "done" || mode === "view" ? "locked" : ""}`}>
                   {PROGRESS_STEPS.map(p => (
                     <button type="button" key={p}
                       className={`seg-btn ${progress === p ? "active" : ""}`}
                       onClick={() => setProgress(p)}
-                      disabled={status === "done"}>
+                      disabled={status === "done" || mode === "view"}>
                       {p}%
                     </button>
                   ))}
@@ -400,32 +407,52 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               <label className="field-label">Block reason</label>
               <input className="text-input" value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="Waiting for…"/>
+                placeholder="Waiting for…"
+                readOnly={mode === "view"}/>
             </div>
           )}
 
           <div className="field">
-            <label className="field-label">Tags <span className="field-hint">type a name, press Enter or comma to add</span></label>
-            <TagAutocompleteInput
-              tags={tags}
-              setTags={setTags}
-              tagInput={tagInput}
-              setTagInput={setTagInput}
-              addTag={addTag}
-              removeTag={removeTag}
-              allTags={recentTags}
-            />
+            <label className="field-label">Tags {mode !== "view" && <span className="field-hint">type a name, press Enter or comma to add</span>}</label>
+            {mode === "view" ? (
+              <div className="tag-list-readonly">
+                {tags.length === 0 ? <span className="muted">No tags</span> : tags.map(t => (
+                  <span key={t} className="tag">{t}</span>
+                ))}
+              </div>
+            ) : (
+              <TagAutocompleteInput
+                tags={tags}
+                setTags={setTags}
+                tagInput={tagInput}
+                setTagInput={setTagInput}
+                addTag={addTag}
+                removeTag={removeTag}
+                allTags={recentTags}
+              />
+            )}
           </div>
         </div>
 
         <div className="dlg-foot">
-          <span className="dlg-hint">⌘↩ to save · Esc to cancel</span>
-          <div className="dlg-foot-actions">
-            <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn-primary" disabled={!title.trim()}>
-              {mode === "edit" ? "Save changes" : "Create item"}
-            </button>
-          </div>
+          {mode === "view" ? (
+            <>
+              <span className="dlg-hint">Read-only · archived {initial?.archived || ''}</span>
+              <div className="dlg-foot-actions">
+                <button type="button" className="btn-secondary" onClick={onClose}>Close</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className="dlg-hint">⌘↩ to save · Esc to cancel</span>
+              <div className="dlg-foot-actions">
+                <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={!title.trim()}>
+                  {mode === "edit" ? "Save changes" : "Create item"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </form>
     </Dialog>

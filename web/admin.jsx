@@ -461,7 +461,7 @@ function AppearanceCard({ tweaks, setTweak }) {
   );
 }
 
-function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup }) {
+function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup, archiveData, onArchiveItems, onRestoreItems, onViewItem }) {
   const [previewBackup, setPreviewBackup] = useState(null);
 
   const counts = countByStatus(data.entries);
@@ -650,6 +650,15 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onFo
           )}
         </section>
 
+        {/* Archive manager */}
+        <ArchiveCard
+          entries={data.entries}
+          archiveData={archiveData}
+          onArchiveItems={onArchiveItems}
+          onRestoreItems={onRestoreItems}
+          onViewItem={onViewItem}
+        />
+
         {/* Recent history */}
         <section className="card span-3">
           <div className="card-head">
@@ -688,4 +697,156 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onFo
   );
 }
 
+// ---- Archive Manager Card ----
+function ArchiveCard({ entries, archiveData, onArchiveItems, onRestoreItems, onViewItem }) {
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [filter, setFilter] = useState('done'); // 'done', 'cancelled', 'all'
+  const [searchTerm, setSearchTerm] = useState('');
+  const [archiveSearchTerm, setArchiveSearchTerm] = useState('');
+  const [expandedArchive, setExpandedArchive] = useState(false);
+
+  // Find archivable items (done or cancelled)
+  const archivableItems = [];
+  walkTree(entries, (item) => {
+    if (filter === 'all' || item.status === filter) {
+      if (item.status === 'done' || item.status === 'cancelled') {
+        archivableItems.push(item);
+      }
+    }
+  });
+
+  // Filter by search
+  const filteredItems = archivableItems.filter(it =>
+    !searchTerm || it.title.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // Archive entries
+  const archiveEntries = archiveData?.entries || [];
+  const filteredArchiveItems = [];
+  walkTree(archiveEntries, (item) => {
+    if (!archiveSearchTerm || item.title.toLowerCase().includes(archiveSearchTerm.toLowerCase())) {
+      filteredArchiveItems.push(item);
+    }
+  });
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const selectAll = () => {
+    setSelectedIds(filteredItems.map(it => it.id));
+  };
+
+  const handleArchive = () => {
+    if (selectedIds.length > 0) {
+      onArchiveItems(selectedIds);
+      setSelectedIds([]);
+    }
+  };
+
+  return (
+    <section className="card span-3">
+      <div className="card-head">
+        <h3>Archive manager</h3>
+        <span className="card-sub">
+          {archivableItems.length} archivable · {archiveEntries.length} archived
+        </span>
+      </div>
+
+      {/* Archivable items */}
+      <div className="archive-section">
+        <div className="archive-toolbar">
+          <span className="archive-label">Archivable items</span>
+          <select value={filter} onChange={e => setFilter(e.target.value)} className="archive-filter">
+            <option value="done">Done only</option>
+            <option value="cancelled">Cancelled only</option>
+            <option value="all">Done + Cancelled</option>
+          </select>
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className="archive-search"
+          />
+          <button className="btn-secondary btn-sm" onClick={selectAll} disabled={filteredItems.length === 0}>
+            Select all
+          </button>
+          <button className="btn-primary btn-sm" onClick={handleArchive} disabled={selectedIds.length === 0}>
+            Archive {selectedIds.length > 0 ? `(${selectedIds.length})` : ''}
+          </button>
+        </div>
+
+        {filteredItems.length === 0 ? (
+          <div className="archive-empty">No archivable items found</div>
+        ) : (
+          <div className="archive-list">
+            {filteredItems.slice(0, 20).map(it => (
+              <label key={it.id} className="archive-item">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(it.id)}
+                  onChange={() => toggleSelect(it.id)}
+                />
+                <StatusIcon status={it.status} size={14}/>
+                <span className="archive-item-title">{it.title}</span>
+                {it.children?.length > 0 && (
+                  <span className="archive-item-children">+{it.children.length} children</span>
+                )}
+              </label>
+            ))}
+            {filteredItems.length > 20 && (
+              <div className="archive-more">...and {filteredItems.length - 20} more</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Archive browser */}
+      <div className="archive-section">
+        <div className="archive-toolbar">
+          <span className="archive-label">Archived items ({archiveEntries.length})</span>
+          <button className="btn-secondary btn-sm" onClick={() => setExpandedArchive(!expandedArchive)}>
+            {expandedArchive ? 'Collapse' : 'Expand'}
+          </button>
+          {expandedArchive && (
+            <input
+              type="text"
+              placeholder="Search archive..."
+              value={archiveSearchTerm}
+              onChange={e => setArchiveSearchTerm(e.target.value)}
+              className="archive-search"
+            />
+          )}
+        </div>
+
+        {expandedArchive && (
+          filteredArchiveItems.length === 0 ? (
+            <div className="archive-empty">
+              {archiveEntries.length === 0 ? 'Archive is empty' : 'No matches found'}
+            </div>
+          ) : (
+            <div className="archive-list">
+              {filteredArchiveItems.slice(0, 30).map(it => (
+                <div key={it.id} className="archive-item archived">
+                  <StatusIcon status={it.status} size={14}/>
+                  <span className="archive-item-title" onDoubleClick={() => onViewItem?.(it)}>{it.title}</span>
+                  {it.archived && (
+                    <span className="archive-item-date">archived {it.archived}</span>
+                  )}
+                  <button className="btn-secondary btn-xs" onClick={() => onRestoreItems([it.id])}>Restore</button>
+                </div>
+              ))}
+              {filteredArchiveItems.length > 30 && (
+                <div className="archive-more">...and {filteredArchiveItems.length - 30} more</div>
+              )}
+            </div>
+          )
+        )}
+      </div>
+    </section>
+  );
+}
+
 window.AdminPage = AdminPage;
+window.ArchiveCard = ArchiveCard;

@@ -56,6 +56,7 @@ function App() {
   const [itemDialog, setItemDialog] = useStateMain(null);
   const [confirm, setConfirm]       = useStateMain(null);
   const [needsConnect, setNeedsConnect] = useStateMain(false);
+  const [archiveData, setArchiveData] = useStateMain({ entries: [], history: [] });
 
   const TWEAK_DEFAULTS = { accent_hue: 35, density: 'comfortable', show_ids: false, paper_texture: true, status_style: 'color', sort_mode: 'priority', theme: 'system' };
   const [tweaks, setTweak] = useTweaks({ ...TWEAK_DEFAULTS, ...(loadLocalState()?.tweaks ?? {}) });
@@ -441,6 +442,19 @@ function App() {
 
   const filteredCount = useMemoMain(() => countAll(filtered),       [filtered]);
   const totalCount    = useMemoMain(() => countAll(data.entries),    [data]);
+  const archiveMatchCount = useMemoMain(() => {
+    if (!filters.text?.trim()) return 0;
+    const q = filters.text.trim().toLowerCase();
+    let count = 0;
+    walkTree(archiveData.entries, (item) => {
+      if (item.title.toLowerCase().includes(q) ||
+          item.body?.toLowerCase().includes(q) ||
+          item.tags?.some(t => t.toLowerCase().includes(q))) {
+        count++;
+      }
+    });
+    return count;
+  }, [filters.text, archiveData.entries]);
 
   // ---- Keyboard shortcuts ----
   useEffectMain(() => {
@@ -506,6 +520,142 @@ function App() {
     });
     setImportExportOpen(false);
     triggerSave('Imported');
+  };
+
+  // ---- Archive functions ----
+  const loadArchive = async () => {
+    try {
+      const raw = await Storage.loadArchive();
+      if (raw.exists && raw.content) {
+        const parsed = await Parser.parse(raw.content);
+        setArchiveData({ entries: parsed.entries || [], history: parsed.history || [] });
+      }
+    } catch (e) {
+      console.error('Failed to load archive:', e);
+    }
+  };
+
+  // Load archive when switching to admin view
+  useEffectMain(() => {
+    if (view === 'admin') loadArchive();
+  }, [view]);
+
+  const handleArchiveItems = async (itemIds) => {
+    const now = new Date().toISOString().slice(0, 10);
+    const toArchive = [];
+
+    // Build items to archive with restore-path metadata
+    for (const id of itemIds) {
+      const item = findItem(data.entries, id);
+      if (!item) continue;
+      const restorePath = getRestorePath(data.entries, id);
+      // Deep clone and add archive metadata
+      const cloned = JSON.parse(JSON.stringify(item));
+      cloned.archived = now;
+      cloned.restorePath = restorePath || null;
+      toArchive.push(cloned);
+    }
+
+    if (toArchive.length === 0) return;
+
+    // Remove from backlog
+    const { entries: newEntries } = removeItems([...data.entries], itemIds);
+
+    // Add to archive
+    const newArchiveEntries = [...archiveData.entries, ...toArchive];
+
+    // Add history entries
+    const newHistory = [...data.history];
+    for (const item of toArchive) {
+      newHistory.unshift({
+        timestamp: new Date().toISOString(),
+        itemId: item.id,
+        action: 'item_archived',
+        details: `moved to archive.md`
+      });
+    }
+
+    try {
+      // Serialize both files
+      const backlogContent = await Parser.serialize({ entries: newEntries, history: newHistory });
+      const archiveContent = await Parser.serialize({ entries: newArchiveEntries, history: archiveData.history });
+
+      // Save both atomically
+      const result = await Storage.saveArchive(backlogContent, archiveContent);
+      if (!result.ok) throw new Error('Archive failed');
+
+      // Update local state
+      setData(d => ({ ...d, entries: newEntries, history: newHistory }));
+      setArchiveData({ entries: newArchiveEntries, history: archiveData.history });
+      isDirtyRef.current = false;
+
+      showToast(`Archived ${toArchive.length} item${toArchive.length > 1 ? 's' : ''}`);
+    } catch (e) {
+      showToast('Archive failed: ' + e.message, 'err');
+    }
+  };
+
+  const handleRestoreItems = async (itemIds) => {
+    const toRestore = [];
+    const remainingArchive = [];
+
+    // Find items to restore
+    for (const item of archiveData.entries) {
+      if (itemIds.includes(item.id)) {
+        toRestore.push(item);
+      } else {
+        remainingArchive.push(item);
+      }
+    }
+
+    if (toRestore.length === 0) return;
+
+    // Restore to backlog
+    const newEntries = [...data.entries];
+    const warnings = [];
+    for (const item of toRestore) {
+      const restorePath = item.restorePath;
+      // Clear archive metadata
+      delete item.archived;
+      delete item.restorePath;
+      // Try to insert at original location
+      const inserted = insertAtPath(newEntries, item, restorePath);
+      if (!inserted) {
+        warnings.push(item.title);
+      }
+    }
+
+    // Add history entries
+    const newHistory = [...data.history];
+    for (const item of toRestore) {
+      newHistory.unshift({
+        timestamp: new Date().toISOString(),
+        itemId: item.id,
+        action: 'item_restored',
+        details: `restored from archive`
+      });
+    }
+
+    try {
+      // Serialize both files
+      const backlogContent = await Parser.serialize({ entries: newEntries, history: newHistory });
+      const archiveContent = await Parser.serialize({ entries: remainingArchive, history: archiveData.history });
+
+      // Save both atomically
+      const result = await Storage.restoreFromArchive(backlogContent, archiveContent);
+      if (!result.ok) throw new Error('Restore failed');
+
+      // Update local state
+      setData(d => ({ ...d, entries: newEntries, history: newHistory }));
+      setArchiveData({ entries: remainingArchive, history: archiveData.history });
+      isDirtyRef.current = false;
+
+      let msg = `Restored ${toRestore.length} item${toRestore.length > 1 ? 's' : ''}`;
+      if (warnings.length) msg += ` (${warnings.length} to root - parent not found)`;
+      showToast(msg);
+    } catch (e) {
+      showToast('Restore failed: ' + e.message, 'err');
+    }
   };
 
   const saveLabel  = saveState.status === 'saving' ? 'Saving…'
@@ -584,7 +734,14 @@ function App() {
                 <div>
                   <div className="eyebrow">Backlog</div>
                   <h1 className="content-title">
-                    {hasFilters ? <>{filteredCount} of {totalCount} items</> : <>{totalCount} items</>}
+                    {hasFilters ? (
+                      <>
+                        {filteredCount} of {totalCount} items
+                        {archiveMatchCount > 0 && <> · {archiveMatchCount} in archive</>}
+                      </>
+                    ) : (
+                      <>{totalCount} items</>
+                    )}
                   </h1>
                 </div>
                 <div className="content-head-actions">
@@ -635,6 +792,15 @@ function App() {
                   manualOrder={tweaks.sort_mode === 'manual'}
                 />
               )}
+              {filters.text?.trim() && (
+                <ArchiveSearchResults
+                  query={filters.text.trim()}
+                  archiveEntries={archiveData.entries}
+                  onRestore={handleRestoreItems}
+                  onLoadArchive={loadArchive}
+                  onView={(item) => setItemDialog({ mode: 'view', initial: item })}
+                />
+              )}
             </div>
           </section>
         </div>
@@ -664,6 +830,10 @@ function App() {
               showToast(`${name.slice(0, 28)}… — download not available in direct mode`);
             }
           }}
+          archiveData={archiveData}
+          onArchiveItems={handleArchiveItems}
+          onRestoreItems={handleRestoreItems}
+          onViewItem={(item) => setItemDialog({ mode: 'view', initial: item })}
         />
       )}
 
@@ -938,6 +1108,65 @@ function ImportExportDialog({ open, data, storageMode, onClose, onImport }) {
         </div>
       </div>
     </Dialog>
+  );
+}
+
+// ----- Archive Search Results -----
+function ArchiveSearchResults({ query, archiveEntries, onRestore, onLoadArchive, onView }) {
+  const [loading, setLoading] = useStateMain(false);
+  const loadedRef = useRefMain(false);
+
+  // Auto-load archive on first render
+  useEffectMain(() => {
+    if (!loadedRef.current && archiveEntries.length === 0) {
+      loadedRef.current = true;
+      setLoading(true);
+      onLoadArchive().finally(() => setLoading(false));
+    }
+  }, []);
+
+  // Filter archive entries by query
+  const matches = [];
+  if (query) {
+    const q = query.toLowerCase();
+    walkTree(archiveEntries, (item) => {
+      if (item.title.toLowerCase().includes(q) ||
+          item.body?.toLowerCase().includes(q) ||
+          item.tags?.some(t => t.toLowerCase().includes(q))) {
+        matches.push(item);
+      }
+    });
+  }
+
+  if (loading) {
+    return (
+      <div className="archive-search-section">
+        <div className="archive-search-header">Archive — loading...</div>
+      </div>
+    );
+  }
+
+  if (matches.length === 0) return null;
+
+  return (
+    <div className="archive-search-section">
+      <div className="archive-search-header">Archive ({matches.length})</div>
+      <div className="archive-search-results">
+        {matches.slice(0, 10).map(item => (
+          <div key={item.id} className="archive-search-item">
+            <StatusIcon status={item.status} size={14}/>
+            <span className="archive-search-title" onDoubleClick={() => onView(item)}>{item.title}</span>
+            {item.archived && <span className="archive-search-date">{item.archived}</span>}
+            <button className="btn-secondary btn-xs" onClick={() => onRestore([item.id])}>Restore</button>
+          </div>
+        ))}
+        {matches.length > 10 && (
+          <div className="archive-search-more">
+            ...and {matches.length - 10} more (see Admin → Archive)
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

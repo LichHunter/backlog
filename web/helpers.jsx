@@ -520,11 +520,71 @@ const ClipboardUtils = {
   }
 };
 
+// ---- Archive Helpers ----
+function getRestorePath(entries, itemId) {
+  // Build path of parent IDs from root to item's parent
+  const path = [];
+  function find(items, targetId, currentPath) {
+    for (const it of items) {
+      if (it.id === targetId) return currentPath;
+      if (it.children?.length) {
+        const result = find(it.children, targetId, [...currentPath, it.id]);
+        if (result) return result;
+      }
+    }
+    return null;
+  }
+  return find(entries, itemId, [])?.join('/') || '';
+}
+
+function removeItems(entries, itemIds) {
+  // Remove items by ID, returns removed items with their children
+  const removed = [];
+  const idsSet = new Set(itemIds);
+  function remove(items) {
+    const kept = [];
+    for (const it of items) {
+      if (idsSet.has(it.id)) {
+        removed.push(it);
+      } else {
+        if (it.children?.length) it.children = remove(it.children);
+        kept.push(it);
+      }
+    }
+    return kept;
+  }
+  const newEntries = remove(entries);
+  return { entries: newEntries, removed };
+}
+
+function insertAtPath(entries, item, restorePath) {
+  // Insert item at the path specified by parent IDs
+  if (!restorePath) {
+    entries.push(item);
+    return true;
+  }
+  const pathIds = restorePath.split('/').filter(Boolean);
+  let current = entries;
+  for (const pid of pathIds) {
+    const parent = current.find(it => it.id === pid);
+    if (!parent) {
+      // Parent not found - insert at root with warning
+      entries.push(item);
+      return false;
+    }
+    if (!parent.children) parent.children = [];
+    current = parent.children;
+  }
+  current.push(item);
+  return true;
+}
+
 Object.assign(window, {
   STATUSES, STATUS_BY_KEY, STATUS_ORDER, PRIORITIES,
   parseDate, daysBetween, isOverdue, dueRelative, fmtTimestamp, fmtBytes, fmtRelative, fmtShortDate,
   walkTree, findItem, allTags, countAll, countByStatus, filterTree,
   Icon, StatusIcon, ColorStatusIcon, STATUS_COLORS, STATUS_EMOJI, StatusStyleContext,
   PROGRESS_STEPS, snapProgress, progressFor, shouldShowProgress, cycleProgress, ProgressGauge,
-  MarkdownUtils, ClipboardUtils
+  MarkdownUtils, ClipboardUtils,
+  getRestorePath, removeItems, insertAtPath
 });

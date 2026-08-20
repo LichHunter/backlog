@@ -1317,6 +1317,102 @@ input { font: inherit; color: inherit; }
   .status-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* ---------- Archive Manager ---------- */
+.archive-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--rule-2); }
+.archive-section:first-of-type { margin-top: 8px; padding-top: 0; border-top: 0; }
+.archive-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 12px; flex-wrap: wrap;
+}
+.archive-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.archive-filter {
+  padding: 4px 8px; font-size: 12px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+}
+.archive-search {
+  padding: 4px 10px; font-size: 12px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+  width: 160px;
+}
+.archive-search::placeholder { color: var(--ink-3); }
+.archive-empty {
+  padding: 20px; text-align: center;
+  color: var(--ink-3); font-size: 13px;
+}
+.archive-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 280px; overflow-y: auto;
+}
+.archive-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; background: var(--bg); border-radius: var(--radius);
+  font-size: 13px; cursor: pointer;
+  transition: background 0.12s;
+}
+.archive-item:hover { background: var(--bg-2); }
+.archive-item.archived { cursor: default; }
+.archive-item input[type="checkbox"] { flex-shrink: 0; }
+.archive-item .glyph { flex-shrink: 0; width: 18px; text-align: center; }
+.archive-item-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-item-children {
+  font-size: 11px; color: var(--ink-3);
+  padding: 2px 6px; background: var(--rule-2); border-radius: 3px;
+}
+.archive-item-date { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.archive-more { padding: 8px; text-align: center; font-size: 12px; color: var(--ink-3); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-xs { padding: 2px 8px; font-size: 11px; }
+
+/* ---------- Archive Search Results ---------- */
+.archive-search-section {
+  margin-top: 16px; padding-top: 16px;
+  border-top: 1px dashed var(--rule);
+}
+.archive-search-toggle {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px; font-weight: 500; color: var(--ink-2);
+  background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.archive-search-toggle:hover { background: var(--bg-2); color: var(--ink); }
+.archive-loading { color: var(--ink-3); font-style: italic; }
+.archive-count { color: var(--ink-3); }
+.archive-search-results {
+  margin-top: 8px; padding: 8px;
+  background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius);
+}
+.archive-search-empty {
+  padding: 12px; text-align: center;
+  color: var(--ink-3); font-size: 13px;
+}
+.archive-search-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  transition: background 0.12s;
+}
+.archive-search-item:hover { background: var(--bg-2); }
+.archive-search-item .glyph { flex-shrink: 0; width: 18px; text-align: center; }
+.archive-search-title { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-search-date { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.archive-search-more { padding: 8px; text-align: center; font-size: 12px; color: var(--ink-3); }
+.archive-search-header {
+  font-size: 12px; font-weight: 600; color: var(--ink-2);
+  padding: 4px 0; margin-bottom: 8px;
+}
+.archive-match-hint { font-size: 14px; color: var(--ink-3); font-weight: 400; }
+.rte-readonly {
+  padding: 10px 12px; background: var(--bg); border: 1px solid var(--rule);
+  border-radius: var(--radius); font-size: 13px; line-height: 1.5; color: var(--ink-2);
+  min-height: 60px; max-height: 200px; overflow-y: auto;
+}
+.rte-readonly:empty::before { content: 'No details'; color: var(--ink-3); }
+.tag-list-readonly { display: flex; flex-wrap: wrap; gap: 6px; }
+
 </style>
 </head>
 <body>
@@ -2673,6 +2769,66 @@ const ClipboardUtils = {
     return true;
   }
 };
+
+// ---- Archive Helpers ----
+function getRestorePath(entries, itemId) {
+  // Build path of parent IDs from root to item's parent
+  const path = [];
+  function find(items, targetId, currentPath) {
+    for (const it of items) {
+      if (it.id === targetId) return currentPath;
+      if (it.children?.length) {
+        const result = find(it.children, targetId, [...currentPath, it.id]);
+        if (result) return result;
+      }
+    }
+    return null;
+  }
+  return find(entries, itemId, [])?.join('/') || '';
+}
+function removeItems(entries, itemIds) {
+  // Remove items by ID, returns removed items with their children
+  const removed = [];
+  const idsSet = new Set(itemIds);
+  function remove(items) {
+    const kept = [];
+    for (const it of items) {
+      if (idsSet.has(it.id)) {
+        removed.push(it);
+      } else {
+        if (it.children?.length) it.children = remove(it.children);
+        kept.push(it);
+      }
+    }
+    return kept;
+  }
+  const newEntries = remove(entries);
+  return {
+    entries: newEntries,
+    removed
+  };
+}
+function insertAtPath(entries, item, restorePath) {
+  // Insert item at the path specified by parent IDs
+  if (!restorePath) {
+    entries.push(item);
+    return true;
+  }
+  const pathIds = restorePath.split('/').filter(Boolean);
+  let current = entries;
+  for (const pid of pathIds) {
+    const parent = current.find(it => it.id === pid);
+    if (!parent) {
+      // Parent not found - insert at root with warning
+      entries.push(item);
+      return false;
+    }
+    if (!parent.children) parent.children = [];
+    current = parent.children;
+  }
+  current.push(item);
+  return true;
+}
 Object.assign(window, {
   STATUSES,
   STATUS_BY_KEY,
@@ -2705,7 +2861,10 @@ Object.assign(window, {
   cycleProgress,
   ProgressGauge,
   MarkdownUtils,
-  ClipboardUtils
+  ClipboardUtils,
+  getRestorePath,
+  removeItems,
+  insertAtPath
 });
 </script>
   <script>
@@ -2827,11 +2986,13 @@ const Parser = {
         tags = [],
         priority = 'P1',
         progress = 0;
+      let archived = null,
+        restorePath = null;
       const metaM = raw.match(/^(.*?)\s*\*\((.*)\)\*\s*$/);
       if (metaM) {
         title = metaM[1].trim();
         for (const p of metaM[2].split(',').map(s => s.trim())) {
-          if (p.startsWith('due:')) due = p.slice(4).trim();else if (p.startsWith('reason:')) reason = p.slice(7).trim();else if (p.startsWith('tags:')) tags = p.slice(5).trim().split(/\s+/).filter(Boolean);else if (p.startsWith('priority:')) priority = p.slice(9).trim().toUpperCase();else if (p.startsWith('progress:')) progress = parseInt(p.slice(9).trim(), 10) || 0;
+          if (p.startsWith('due:')) due = p.slice(4).trim();else if (p.startsWith('reason:')) reason = p.slice(7).trim();else if (p.startsWith('tags:')) tags = p.slice(5).trim().split(/\s+/).filter(Boolean);else if (p.startsWith('priority:')) priority = p.slice(9).trim().toUpperCase();else if (p.startsWith('progress:')) progress = parseInt(p.slice(9).trim(), 10) || 0;else if (p.startsWith('archived:')) archived = p.slice(9).trim();else if (p.startsWith('restore-path:')) restorePath = p.slice(13).trim();
         }
       }
 
@@ -2855,7 +3016,9 @@ const Parser = {
         progress: status === 'done' ? 100 : progress,
         collapsed: false,
         children: [],
-        body: null
+        body: null,
+        archived: archived || null,
+        restorePath: restorePath || null
       };
       stack[stack.length - 1].children.push(item);
       stack.push({
@@ -2902,6 +3065,8 @@ const Parser = {
       if (it.tags?.length) meta.push(`tags: ${it.tags.join(' ')}`);
       if (it.priority && it.priority !== 'P1') meta.push(`priority: ${it.priority}`);
       if ((it.progress ?? 0) > 0) meta.push(`progress: ${it.progress}`);
+      if (it.archived) meta.push(`archived: ${it.archived}`);
+      if (it.restorePath) meta.push(`restore-path: ${it.restorePath}`);
       const metaStr = meta.length ? ` *(${meta.join(', ')})*` : '';
       const prefix = it.priority ? `[${it.priority}] ` : '';
       lines.push(`${indent}- [${GLYPH[it.status] || ' '}] ${prefix}${it.title}${metaStr}`);
@@ -3000,11 +3165,47 @@ const ApiBackend = {
         masterSize: j.masterSize || 0,
         statsSize: 0,
         masterPath: j.masterPath || '',
-        backupsPath: j.backupsPath || ''
+        backupsPath: j.backupsPath || '',
+        archiveExists: j.archiveExists || false,
+        archiveSize: j.archiveSize || 0,
+        archivePath: j.archivePath || ''
       };
     } catch {
       return {};
     }
+  },
+  async loadArchive() {
+    const r = await fetch('/api/archive');
+    if (!r.ok) throw new Error('API archive load failed: ' + r.status);
+    return r.json(); // { content, checksum, exists }
+  },
+  async saveArchive(backlogContent, archiveContent) {
+    const r = await fetch('/api/archive', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        backlog: backlogContent,
+        archive: archiveContent
+      })
+    });
+    if (!r.ok) throw new Error('API archive save failed: ' + r.status);
+    return r.json();
+  },
+  async restoreFromArchive(backlogContent, archiveContent) {
+    const r = await fetch('/api/archive/restore', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        backlog: backlogContent,
+        archive: archiveContent
+      })
+    });
+    if (!r.ok) throw new Error('API archive restore failed: ' + r.status);
+    return r.json();
   }
 };
 
@@ -3148,18 +3349,51 @@ const DirectBackend = {
   async getHealthInfo() {
     try {
       const f = await (await this.dirHandle.getFileHandle('backlog.md')).getFile();
+      let archiveExists = false,
+        archiveSize = 0;
+      try {
+        const af = await (await this.dirHandle.getFileHandle('archive.md')).getFile();
+        archiveExists = true;
+        archiveSize = af.size;
+      } catch {}
       return {
         masterSize: f.size,
         statsSize: 0,
-        dirName: this.dirHandle?.name ?? null
+        dirName: this.dirHandle?.name ?? null,
+        archiveExists,
+        archiveSize
       };
     } catch {
       return {
         masterSize: 0,
         statsSize: 0,
-        dirName: this.dirHandle?.name ?? null
+        dirName: this.dirHandle?.name ?? null,
+        archiveExists: false,
+        archiveSize: 0
       };
     }
+  },
+  async loadArchive() {
+    const content = await this._readFile('archive.md');
+    return {
+      content: content || '',
+      checksum: '',
+      exists: !!content
+    };
+  },
+  async saveArchive(backlogContent, archiveContent) {
+    await this._writeFile('backlog.md', backlogContent);
+    await this._writeFile('archive.md', archiveContent);
+    return {
+      ok: true
+    };
+  },
+  async restoreFromArchive(backlogContent, archiveContent) {
+    await this._writeFile('backlog.md', backlogContent);
+    await this._writeFile('archive.md', archiveContent);
+    return {
+      ok: true
+    };
   }
 };
 
@@ -3306,6 +3540,7 @@ const BrowserStorageBackend = {
   async getHealthInfo() {
     try {
       const content = (await this._get(this._CONTENT_KEY)) || '';
+      const archiveContent = (await this._get('archive')) || '';
       const estimate = (await navigator.storage?.estimate?.()) || {};
       const persisted = (await navigator.storage?.persisted?.()) || false;
       return {
@@ -3314,14 +3549,62 @@ const BrowserStorageBackend = {
         browserStorage: true,
         persisted,
         quota: estimate.quota,
-        usage: estimate.usage
+        usage: estimate.usage,
+        archiveExists: !!archiveContent,
+        archiveSize: new TextEncoder().encode(archiveContent).length
       };
     } catch {
       return {
         masterSize: 0,
         statsSize: 0,
         browserStorage: true,
-        persisted: false
+        persisted: false,
+        archiveExists: false,
+        archiveSize: 0
+      };
+    }
+  },
+  async loadArchive() {
+    try {
+      const content = (await this._get('archive')) || '';
+      return {
+        content,
+        checksum: '',
+        exists: !!content
+      };
+    } catch {
+      return {
+        content: '',
+        checksum: '',
+        exists: false
+      };
+    }
+  },
+  async saveArchive(backlogContent, archiveContent) {
+    try {
+      await this._set(this._CONTENT_KEY, backlogContent);
+      await this._set('archive', archiveContent);
+      return {
+        ok: true
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e.message
+      };
+    }
+  },
+  async restoreFromArchive(backlogContent, archiveContent) {
+    try {
+      await this._set(this._CONTENT_KEY, backlogContent);
+      await this._set('archive', archiveContent);
+      return {
+        ok: true
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e.message
       };
     }
   }
@@ -3384,6 +3667,22 @@ const Storage = {
   },
   async getHealthInfo() {
     return this.backend?.getHealthInfo?.() ?? {};
+  },
+  async loadArchive() {
+    return this.backend?.loadArchive?.() ?? {
+      content: '',
+      exists: false
+    };
+  },
+  async saveArchive(backlog, archive) {
+    return this.backend?.saveArchive?.(backlog, archive) ?? {
+      ok: false
+    };
+  },
+  async restoreFromArchive(backlog, archive) {
+    return this.backend?.restoreFromArchive?.(backlog, archive) ?? {
+      ok: false
+    };
   }
 };
 
@@ -5177,8 +5476,8 @@ function ItemDialog({
     onSubmit: submit
   }, /*#__PURE__*/React.createElement(DialogHeader, {
     id: "dlg-item-title",
-    eyebrow: mode === "edit" ? "Edit item" : mode === "add-child" ? "Add sub-item" : "New item",
-    title: mode === "edit" ? "Edit details" : "Create item",
+    eyebrow: mode === "view" ? "Archived item" : mode === "edit" ? "Edit item" : mode === "add-child" ? "Add sub-item" : "New item",
+    title: mode === "view" ? "View details (read-only)" : mode === "edit" ? "Edit details" : "Create item",
     onClose: onClose
   }), /*#__PURE__*/React.createElement("div", {
     className: "dlg-body"
@@ -5192,14 +5491,20 @@ function ItemDialog({
     value: title,
     onChange: e => setTitle(e.target.value),
     placeholder: "What needs to happen?",
-    required: true
+    required: true,
+    readOnly: mode === "view"
   })), /*#__PURE__*/React.createElement("div", {
     className: "field"
   }, /*#__PURE__*/React.createElement("label", {
     className: "field-label"
   }, "Details ", /*#__PURE__*/React.createElement("span", {
     className: "field-hint"
-  }, "rich text, supports markdown")), /*#__PURE__*/React.createElement(RichTextEditor, {
+  }, mode === "view" ? "read-only" : "rich text, supports markdown")), mode === "view" ? /*#__PURE__*/React.createElement("div", {
+    className: "rte-readonly",
+    dangerouslySetInnerHTML: {
+      __html: MarkdownUtils.toHtml(body || '')
+    }
+  }) : /*#__PURE__*/React.createElement(RichTextEditor, {
     value: body,
     onChange: setBody,
     placeholder: "Add notes, context, or details...",
@@ -5216,7 +5521,8 @@ function ItemDialog({
     type: "button",
     key: p,
     className: `seg-btn pri-${p} ${priority === p ? "active" : ""}`,
-    onClick: () => setPriority(p)
+    onClick: () => mode !== "view" && setPriority(p),
+    disabled: mode === "view"
   }, p === "P0" && /*#__PURE__*/React.createElement("span", {
     className: "p0-dot"
   }), p)))), /*#__PURE__*/React.createElement("div", {
@@ -5227,7 +5533,8 @@ function ItemDialog({
     className: "text-input",
     type: "date",
     value: due,
-    onChange: e => setDue(e.target.value)
+    onChange: e => setDue(e.target.value),
+    readOnly: mode === "view"
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field"
   }, /*#__PURE__*/React.createElement("label", {
@@ -5238,7 +5545,8 @@ function ItemDialog({
     type: "button",
     key: s.key,
     className: `status-card ${status === s.key ? "active" : ""}`,
-    onClick: () => setStatus(s.key)
+    onClick: () => mode !== "view" && setStatus(s.key),
+    disabled: mode === "view"
   }, /*#__PURE__*/React.createElement("span", {
     className: `status-card-icon status-${s.key}`
   }, /*#__PURE__*/React.createElement(StatusIcon, {
@@ -5252,16 +5560,16 @@ function ItemDialog({
     className: "field-label"
   }, "Completion", /*#__PURE__*/React.createElement("span", {
     className: "field-hint"
-  }, status === "done" ? "locked at 100% while marked done" : "rough estimate — set 100% to mark done")), /*#__PURE__*/React.createElement("div", {
+  }, mode === "view" ? "read-only" : status === "done" ? "locked at 100% while marked done" : "rough estimate — set 100% to mark done")), /*#__PURE__*/React.createElement("div", {
     className: "progress-row"
   }, /*#__PURE__*/React.createElement("div", {
-    className: `seg progress-seg ${status === "done" ? "locked" : ""}`
+    className: `seg progress-seg ${status === "done" || mode === "view" ? "locked" : ""}`
   }, PROGRESS_STEPS.map(p => /*#__PURE__*/React.createElement("button", {
     type: "button",
     key: p,
     className: `seg-btn ${progress === p ? "active" : ""}`,
     onClick: () => setProgress(p),
-    disabled: status === "done"
+    disabled: status === "done" || mode === "view"
   }, p, "%"))), /*#__PURE__*/React.createElement(ProgressGauge, {
     value: status === "done" ? 100 : progress,
     size: "md"
@@ -5273,14 +5581,22 @@ function ItemDialog({
     className: "text-input",
     value: reason,
     onChange: e => setReason(e.target.value),
-    placeholder: "Waiting for\u2026"
+    placeholder: "Waiting for\u2026",
+    readOnly: mode === "view"
   })), /*#__PURE__*/React.createElement("div", {
     className: "field"
   }, /*#__PURE__*/React.createElement("label", {
     className: "field-label"
-  }, "Tags ", /*#__PURE__*/React.createElement("span", {
+  }, "Tags ", mode !== "view" && /*#__PURE__*/React.createElement("span", {
     className: "field-hint"
-  }, "type a name, press Enter or comma to add")), /*#__PURE__*/React.createElement(TagAutocompleteInput, {
+  }, "type a name, press Enter or comma to add")), mode === "view" ? /*#__PURE__*/React.createElement("div", {
+    className: "tag-list-readonly"
+  }, tags.length === 0 ? /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "No tags") : tags.map(t => /*#__PURE__*/React.createElement("span", {
+    key: t,
+    className: "tag"
+  }, t))) : /*#__PURE__*/React.createElement(TagAutocompleteInput, {
     tags: tags,
     setTags: setTags,
     tagInput: tagInput,
@@ -5290,7 +5606,15 @@ function ItemDialog({
     allTags: recentTags
   }))), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot"
-  }, /*#__PURE__*/React.createElement("span", {
+  }, mode === "view" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    className: "dlg-hint"
+  }, "Read-only \xB7 archived ", initial?.archived || ''), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-foot-actions"
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn-secondary",
+    onClick: onClose
+  }, "Close"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     className: "dlg-hint"
   }, "\u2318\u21A9 to save \xB7 Esc to cancel"), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot-actions"
@@ -5302,7 +5626,7 @@ function ItemDialog({
     type: "submit",
     className: "btn-primary",
     disabled: !title.trim()
-  }, mode === "edit" ? "Save changes" : "Create item")))));
+  }, mode === "edit" ? "Save changes" : "Create item"))))));
 }
 
 // --- Confirm dialog ---
@@ -6180,7 +6504,11 @@ function AdminPage({
   onForceBackup,
   onCompact,
   onRestore,
-  onDownloadBackup
+  onDownloadBackup,
+  archiveData,
+  onArchiveItems,
+  onRestoreItems,
+  onViewItem
 }) {
   const [previewBackup, setPreviewBackup] = useState(null);
   const counts = countByStatus(data.entries);
@@ -6367,7 +6695,13 @@ function AdminPage({
 …
 
 <!-- SECTION: INTEGRITY -->
-<!-- saved: 2026-04-30T19:44:02Z | checksum: sha256:8a1c3e… | entries: 27 | history: 10 -->`))), /*#__PURE__*/React.createElement("section", {
+<!-- saved: 2026-04-30T19:44:02Z | checksum: sha256:8a1c3e… | entries: 27 | history: 10 -->`))), /*#__PURE__*/React.createElement(ArchiveCard, {
+    entries: data.entries,
+    archiveData: archiveData,
+    onArchiveItems: onArchiveItems,
+    onRestoreItems: onRestoreItems,
+    onViewItem: onViewItem
+  }), /*#__PURE__*/React.createElement("section", {
     className: "card span-3"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-head"
@@ -6385,7 +6719,149 @@ function AdminPage({
     className: "pill mini neutral"
   }, h.action.replace(/_/g, " "))), /*#__PURE__*/React.createElement("td", null, h.details))))))));
 }
+
+// ---- Archive Manager Card ----
+function ArchiveCard({
+  entries,
+  archiveData,
+  onArchiveItems,
+  onRestoreItems,
+  onViewItem
+}) {
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [filter, setFilter] = useState('done'); // 'done', 'cancelled', 'all'
+  const [searchTerm, setSearchTerm] = useState('');
+  const [archiveSearchTerm, setArchiveSearchTerm] = useState('');
+  const [expandedArchive, setExpandedArchive] = useState(false);
+
+  // Find archivable items (done or cancelled)
+  const archivableItems = [];
+  walkTree(entries, item => {
+    if (filter === 'all' || item.status === filter) {
+      if (item.status === 'done' || item.status === 'cancelled') {
+        archivableItems.push(item);
+      }
+    }
+  });
+
+  // Filter by search
+  const filteredItems = archivableItems.filter(it => !searchTerm || it.title.toLowerCase().includes(searchTerm.toLowerCase()));
+
+  // Archive entries
+  const archiveEntries = archiveData?.entries || [];
+  const filteredArchiveItems = [];
+  walkTree(archiveEntries, item => {
+    if (!archiveSearchTerm || item.title.toLowerCase().includes(archiveSearchTerm.toLowerCase())) {
+      filteredArchiveItems.push(item);
+    }
+  });
+  const toggleSelect = id => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+  const selectAll = () => {
+    setSelectedIds(filteredItems.map(it => it.id));
+  };
+  const handleArchive = () => {
+    if (selectedIds.length > 0) {
+      onArchiveItems(selectedIds);
+      setSelectedIds([]);
+    }
+  };
+  return /*#__PURE__*/React.createElement("section", {
+    className: "card span-3"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card-head"
+  }, /*#__PURE__*/React.createElement("h3", null, "Archive manager"), /*#__PURE__*/React.createElement("span", {
+    className: "card-sub"
+  }, archivableItems.length, " archivable \xB7 ", archiveEntries.length, " archived")), /*#__PURE__*/React.createElement("div", {
+    className: "archive-section"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "archive-toolbar"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "archive-label"
+  }, "Archivable items"), /*#__PURE__*/React.createElement("select", {
+    value: filter,
+    onChange: e => setFilter(e.target.value),
+    className: "archive-filter"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "done"
+  }, "Done only"), /*#__PURE__*/React.createElement("option", {
+    value: "cancelled"
+  }, "Cancelled only"), /*#__PURE__*/React.createElement("option", {
+    value: "all"
+  }, "Done + Cancelled")), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    placeholder: "Search...",
+    value: searchTerm,
+    onChange: e => setSearchTerm(e.target.value),
+    className: "archive-search"
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn-secondary btn-sm",
+    onClick: selectAll,
+    disabled: filteredItems.length === 0
+  }, "Select all"), /*#__PURE__*/React.createElement("button", {
+    className: "btn-primary btn-sm",
+    onClick: handleArchive,
+    disabled: selectedIds.length === 0
+  }, "Archive ", selectedIds.length > 0 ? `(${selectedIds.length})` : '')), filteredItems.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "archive-empty"
+  }, "No archivable items found") : /*#__PURE__*/React.createElement("div", {
+    className: "archive-list"
+  }, filteredItems.slice(0, 20).map(it => /*#__PURE__*/React.createElement("label", {
+    key: it.id,
+    className: "archive-item"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: selectedIds.includes(it.id),
+    onChange: () => toggleSelect(it.id)
+  }), /*#__PURE__*/React.createElement(StatusIcon, {
+    status: it.status,
+    size: 14
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "archive-item-title"
+  }, it.title), it.children?.length > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "archive-item-children"
+  }, "+", it.children.length, " children"))), filteredItems.length > 20 && /*#__PURE__*/React.createElement("div", {
+    className: "archive-more"
+  }, "...and ", filteredItems.length - 20, " more"))), /*#__PURE__*/React.createElement("div", {
+    className: "archive-section"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "archive-toolbar"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "archive-label"
+  }, "Archived items (", archiveEntries.length, ")"), /*#__PURE__*/React.createElement("button", {
+    className: "btn-secondary btn-sm",
+    onClick: () => setExpandedArchive(!expandedArchive)
+  }, expandedArchive ? 'Collapse' : 'Expand'), expandedArchive && /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    placeholder: "Search archive...",
+    value: archiveSearchTerm,
+    onChange: e => setArchiveSearchTerm(e.target.value),
+    className: "archive-search"
+  })), expandedArchive && (filteredArchiveItems.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "archive-empty"
+  }, archiveEntries.length === 0 ? 'Archive is empty' : 'No matches found') : /*#__PURE__*/React.createElement("div", {
+    className: "archive-list"
+  }, filteredArchiveItems.slice(0, 30).map(it => /*#__PURE__*/React.createElement("div", {
+    key: it.id,
+    className: "archive-item archived"
+  }, /*#__PURE__*/React.createElement(StatusIcon, {
+    status: it.status,
+    size: 14
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "archive-item-title",
+    onDoubleClick: () => onViewItem?.(it)
+  }, it.title), it.archived && /*#__PURE__*/React.createElement("span", {
+    className: "archive-item-date"
+  }, "archived ", it.archived), /*#__PURE__*/React.createElement("button", {
+    className: "btn-secondary btn-xs",
+    onClick: () => onRestoreItems([it.id])
+  }, "Restore"))), filteredArchiveItems.length > 30 && /*#__PURE__*/React.createElement("div", {
+    className: "archive-more"
+  }, "...and ", filteredArchiveItems.length - 30, " more")))));
+}
 window.AdminPage = AdminPage;
+window.ArchiveCard = ArchiveCard;
 </script>
   <script>
 // Main App — top shell, state management, real storage load/save flow.
@@ -6492,6 +6968,10 @@ function App() {
   const [itemDialog, setItemDialog] = useStateMain(null);
   const [confirm, setConfirm] = useStateMain(null);
   const [needsConnect, setNeedsConnect] = useStateMain(false);
+  const [archiveData, setArchiveData] = useStateMain({
+    entries: [],
+    history: []
+  });
   const TWEAK_DEFAULTS = {
     accent_hue: 35,
     density: 'comfortable',
@@ -6973,6 +7453,17 @@ function App() {
   }, [data, filters, tweaks.sort_mode]);
   const filteredCount = useMemoMain(() => countAll(filtered), [filtered]);
   const totalCount = useMemoMain(() => countAll(data.entries), [data]);
+  const archiveMatchCount = useMemoMain(() => {
+    if (!filters.text?.trim()) return 0;
+    const q = filters.text.trim().toLowerCase();
+    let count = 0;
+    walkTree(archiveData.entries, item => {
+      if (item.title.toLowerCase().includes(q) || item.body?.toLowerCase().includes(q) || item.tags?.some(t => t.toLowerCase().includes(q))) {
+        count++;
+      }
+    });
+    return count;
+  }, [filters.text, archiveData.entries]);
 
   // ---- Keyboard shortcuts ----
   useEffectMain(() => {
@@ -7049,6 +7540,165 @@ function App() {
     });
     setImportExportOpen(false);
     triggerSave('Imported');
+  };
+
+  // ---- Archive functions ----
+  const loadArchive = async () => {
+    try {
+      const raw = await Storage.loadArchive();
+      if (raw.exists && raw.content) {
+        const parsed = await Parser.parse(raw.content);
+        setArchiveData({
+          entries: parsed.entries || [],
+          history: parsed.history || []
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load archive:', e);
+    }
+  };
+
+  // Load archive when switching to admin view
+  useEffectMain(() => {
+    if (view === 'admin') loadArchive();
+  }, [view]);
+  const handleArchiveItems = async itemIds => {
+    const now = new Date().toISOString().slice(0, 10);
+    const toArchive = [];
+
+    // Build items to archive with restore-path metadata
+    for (const id of itemIds) {
+      const item = findItem(data.entries, id);
+      if (!item) continue;
+      const restorePath = getRestorePath(data.entries, id);
+      // Deep clone and add archive metadata
+      const cloned = JSON.parse(JSON.stringify(item));
+      cloned.archived = now;
+      cloned.restorePath = restorePath || null;
+      toArchive.push(cloned);
+    }
+    if (toArchive.length === 0) return;
+
+    // Remove from backlog
+    const {
+      entries: newEntries
+    } = removeItems([...data.entries], itemIds);
+
+    // Add to archive
+    const newArchiveEntries = [...archiveData.entries, ...toArchive];
+
+    // Add history entries
+    const newHistory = [...data.history];
+    for (const item of toArchive) {
+      newHistory.unshift({
+        timestamp: new Date().toISOString(),
+        itemId: item.id,
+        action: 'item_archived',
+        details: `moved to archive.md`
+      });
+    }
+    try {
+      // Serialize both files
+      const backlogContent = await Parser.serialize({
+        entries: newEntries,
+        history: newHistory
+      });
+      const archiveContent = await Parser.serialize({
+        entries: newArchiveEntries,
+        history: archiveData.history
+      });
+
+      // Save both atomically
+      const result = await Storage.saveArchive(backlogContent, archiveContent);
+      if (!result.ok) throw new Error('Archive failed');
+
+      // Update local state
+      setData(d => ({
+        ...d,
+        entries: newEntries,
+        history: newHistory
+      }));
+      setArchiveData({
+        entries: newArchiveEntries,
+        history: archiveData.history
+      });
+      isDirtyRef.current = false;
+      showToast(`Archived ${toArchive.length} item${toArchive.length > 1 ? 's' : ''}`);
+    } catch (e) {
+      showToast('Archive failed: ' + e.message, 'err');
+    }
+  };
+  const handleRestoreItems = async itemIds => {
+    const toRestore = [];
+    const remainingArchive = [];
+
+    // Find items to restore
+    for (const item of archiveData.entries) {
+      if (itemIds.includes(item.id)) {
+        toRestore.push(item);
+      } else {
+        remainingArchive.push(item);
+      }
+    }
+    if (toRestore.length === 0) return;
+
+    // Restore to backlog
+    const newEntries = [...data.entries];
+    const warnings = [];
+    for (const item of toRestore) {
+      const restorePath = item.restorePath;
+      // Clear archive metadata
+      delete item.archived;
+      delete item.restorePath;
+      // Try to insert at original location
+      const inserted = insertAtPath(newEntries, item, restorePath);
+      if (!inserted) {
+        warnings.push(item.title);
+      }
+    }
+
+    // Add history entries
+    const newHistory = [...data.history];
+    for (const item of toRestore) {
+      newHistory.unshift({
+        timestamp: new Date().toISOString(),
+        itemId: item.id,
+        action: 'item_restored',
+        details: `restored from archive`
+      });
+    }
+    try {
+      // Serialize both files
+      const backlogContent = await Parser.serialize({
+        entries: newEntries,
+        history: newHistory
+      });
+      const archiveContent = await Parser.serialize({
+        entries: remainingArchive,
+        history: archiveData.history
+      });
+
+      // Save both atomically
+      const result = await Storage.restoreFromArchive(backlogContent, archiveContent);
+      if (!result.ok) throw new Error('Restore failed');
+
+      // Update local state
+      setData(d => ({
+        ...d,
+        entries: newEntries,
+        history: newHistory
+      }));
+      setArchiveData({
+        entries: remainingArchive,
+        history: archiveData.history
+      });
+      isDirtyRef.current = false;
+      let msg = `Restored ${toRestore.length} item${toRestore.length > 1 ? 's' : ''}`;
+      if (warnings.length) msg += ` (${warnings.length} to root - parent not found)`;
+      showToast(msg);
+    } catch (e) {
+      showToast('Restore failed: ' + e.message, 'err');
+    }
   };
   const saveLabel = saveState.status === 'saving' ? 'Saving…' : saveState.status === 'error' ? 'Save failed' : `Saved · ${fmtTimestamp(saveState.lastSaved)}`;
   const hasFilters = filters.text || filters.statuses?.length || filters.priorities?.length || filters.tags?.length || filters.dueRange;
@@ -7153,7 +7803,7 @@ function App() {
     className: "eyebrow"
   }, "Backlog"), /*#__PURE__*/React.createElement("h1", {
     className: "content-title"
-  }, hasFilters ? /*#__PURE__*/React.createElement(React.Fragment, null, filteredCount, " of ", totalCount, " items") : /*#__PURE__*/React.createElement(React.Fragment, null, totalCount, " items"))), /*#__PURE__*/React.createElement("div", {
+  }, hasFilters ? /*#__PURE__*/React.createElement(React.Fragment, null, filteredCount, " of ", totalCount, " items", archiveMatchCount > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 ", archiveMatchCount, " in archive")) : /*#__PURE__*/React.createElement(React.Fragment, null, totalCount, " items"))), /*#__PURE__*/React.createElement("div", {
     className: "content-head-actions"
   }, /*#__PURE__*/React.createElement("div", {
     className: "seg seg-mini",
@@ -7201,6 +7851,15 @@ function App() {
     query: filters.text?.trim() || '',
     statusStyle: tweaks.status_style,
     manualOrder: tweaks.sort_mode === 'manual'
+  }), filters.text?.trim() && /*#__PURE__*/React.createElement(ArchiveSearchResults, {
+    query: filters.text.trim(),
+    archiveEntries: archiveData.entries,
+    onRestore: handleRestoreItems,
+    onLoadArchive: loadArchive,
+    onView: item => setItemDialog({
+      mode: 'view',
+      initial: item
+    })
   })))) : /*#__PURE__*/React.createElement(AdminPage, {
     data: data,
     history: data.history,
@@ -7225,7 +7884,14 @@ function App() {
       } else {
         showToast(`${name.slice(0, 28)}… — download not available in direct mode`);
       }
-    }
+    },
+    archiveData: archiveData,
+    onArchiveItems: handleArchiveItems,
+    onRestoreItems: handleRestoreItems,
+    onViewItem: item => setItemDialog({
+      mode: 'view',
+      initial: item
+    })
   }), /*#__PURE__*/React.createElement(ItemDialog, {
     open: !!itemDialog,
     mode: itemDialog?.mode,
@@ -7631,6 +8297,69 @@ function ImportExportDialog({
     name: "download",
     size: 12
   }), " Download ", tab === 'md' ? '.md' : '.json'))));
+}
+
+// ----- Archive Search Results -----
+function ArchiveSearchResults({
+  query,
+  archiveEntries,
+  onRestore,
+  onLoadArchive,
+  onView
+}) {
+  const [loading, setLoading] = useStateMain(false);
+  const loadedRef = useRefMain(false);
+
+  // Auto-load archive on first render
+  useEffectMain(() => {
+    if (!loadedRef.current && archiveEntries.length === 0) {
+      loadedRef.current = true;
+      setLoading(true);
+      onLoadArchive().finally(() => setLoading(false));
+    }
+  }, []);
+
+  // Filter archive entries by query
+  const matches = [];
+  if (query) {
+    const q = query.toLowerCase();
+    walkTree(archiveEntries, item => {
+      if (item.title.toLowerCase().includes(q) || item.body?.toLowerCase().includes(q) || item.tags?.some(t => t.toLowerCase().includes(q))) {
+        matches.push(item);
+      }
+    });
+  }
+  if (loading) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "archive-search-section"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "archive-search-header"
+    }, "Archive \u2014 loading..."));
+  }
+  if (matches.length === 0) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "archive-search-section"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "archive-search-header"
+  }, "Archive (", matches.length, ")"), /*#__PURE__*/React.createElement("div", {
+    className: "archive-search-results"
+  }, matches.slice(0, 10).map(item => /*#__PURE__*/React.createElement("div", {
+    key: item.id,
+    className: "archive-search-item"
+  }, /*#__PURE__*/React.createElement(StatusIcon, {
+    status: item.status,
+    size: 14
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "archive-search-title",
+    onDoubleClick: () => onView(item)
+  }, item.title), item.archived && /*#__PURE__*/React.createElement("span", {
+    className: "archive-search-date"
+  }, item.archived), /*#__PURE__*/React.createElement("button", {
+    className: "btn-secondary btn-xs",
+    onClick: () => onRestore([item.id])
+  }, "Restore"))), matches.length > 10 && /*#__PURE__*/React.createElement("div", {
+    className: "archive-search-more"
+  }, "...and ", matches.length - 10, " more (see Admin \u2192 Archive)")));
 }
 window.App = App;
 </script>

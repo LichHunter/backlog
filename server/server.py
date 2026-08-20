@@ -23,6 +23,7 @@ class Config:
         self.dir = directory.resolve()
         self.port = port
         self.master = self.dir / "backlog.md"
+        self.archive = self.dir / "archive.md"
         self.backups_dir = self.dir / "backups"
         self.stats_file = self.dir / "stats.jsonl"
         self.web_dir = web_dir.resolve() if web_dir else Path(__file__).parent.parent / "webapp"
@@ -125,6 +126,26 @@ def write_master(content: str) -> dict:
     tmp.replace(CONFIG.master)
     # Stats
     append_stats({"t": datetime.now(timezone.utc).isoformat(), "e": "save_completed", "d": {"size": len(content.encode("utf-8"))}})
+    _, _, meta = parse_markdown_sections(content)
+    return {"ok": True, "checksum": meta["checksum"] if meta else "", "saved": meta["saved"] if meta else ""}
+
+
+def read_archive() -> dict:
+    """Read archive.md, return empty structure if not exists."""
+    if not CONFIG.archive.exists():
+        return {"content": "", "checksum": "", "size": 0, "exists": False}
+    text = CONFIG.archive.read_text(encoding="utf-8")
+    entries, history, meta = parse_markdown_sections(text)
+    checksum = meta["checksum"] if meta else ""
+    return {"content": text, "checksum": checksum, "size": len(text.encode("utf-8")), "exists": True}
+
+
+def write_archive(content: str) -> dict:
+    """Write archive.md (append-only semantics enforced at API level)."""
+    tmp = CONFIG.archive.with_suffix(".md.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    parse_markdown_sections(content)  # Verify it parses
+    tmp.replace(CONFIG.archive)
     _, _, meta = parse_markdown_sections(content)
     return {"ok": True, "checksum": meta["checksum"] if meta else "", "saved": meta["saved"] if meta else ""}
 
@@ -285,6 +306,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/health":
             info = read_master()
+            archive_info = read_archive()
             backups = list_backups()
             self._json_response({
                 "status": "ok",
@@ -294,6 +316,9 @@ class Handler(BaseHTTPRequestHandler):
                 "backupCount": len(backups),
                 "masterPath": str(CONFIG.master),
                 "backupsPath": str(CONFIG.backups_dir),
+                "archiveExists": archive_info["exists"],
+                "archiveSize": archive_info["size"],
+                "archivePath": str(CONFIG.archive),
             })
             return
 
@@ -306,6 +331,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             self._json_response({"content": info["content"], "checksum": info["checksum"]})
+            return
+
+        if path == "/api/archive":
+            info = read_archive()
+            if not info["exists"]:
+                self._json_response({"content": "", "checksum": "", "exists": False})
+                return
+            client_checksum = qs.get("checksum", [None])[0]
+            if client_checksum and client_checksum == info["checksum"]:
+                self.send_response(304)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                return
+            self._json_response({"content": info["content"], "checksum": info["checksum"], "exists": True})
             return
 
         if path == "/api/backups":
@@ -340,6 +379,32 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             result = restore_backup(body.get("name", ""))
             self._json_response(result)
+            return
+
+        if path == "/api/archive":
+            # Archive items: save both backlog and archive atomically
+            body = self._read_json_body()
+            backlog_content = body.get("backlog", "")
+            archive_content = body.get("archive", "")
+            # Validate both parse correctly
+            parse_markdown_sections(backlog_content)
+            parse_markdown_sections(archive_content)
+            # Write archive first (append-only), then backlog
+            archive_result = write_archive(archive_content)
+            backlog_result = write_master(backlog_content)
+            self._json_response({"ok": True, "backlog": backlog_result, "archive": archive_result})
+            return
+
+        if path == "/api/archive/restore":
+            # Restore items from archive: save both backlog and archive atomically
+            body = self._read_json_body()
+            backlog_content = body.get("backlog", "")
+            archive_content = body.get("archive", "")
+            parse_markdown_sections(backlog_content)
+            parse_markdown_sections(archive_content)
+            backlog_result = write_master(backlog_content)
+            archive_result = write_archive(archive_content)
+            self._json_response({"ok": True, "backlog": backlog_result, "archive": archive_result})
             return
 
         if path == "/api/export":

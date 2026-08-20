@@ -94,6 +94,22 @@ All your tasks live in `backlog.md`, structured as:
 
 You can edit this file in any text editor. The app detects external changes and reloads automatically.
 
+### Archive File
+
+Completed tasks can be moved to `archive.md` to keep the main backlog clean. The archive uses the same format with an additional `restore-path` field:
+
+```markdown
+# Archive
+
+<!-- SECTION: ENTRIES -->
+
+- [x] [P1] Old completed task *(archived: 2025-05-01, restore-path: i-abc/i-def)*
+  > Original body preserved
+  - [x] Child task also archived
+```
+
+The `restore-path` stores the original parent chain, allowing items to be restored to their original location. If the parent no longer exists, items restore to root level.
+
 ### Features
 
 - **4-level nesting** — Area → Project → Task → Sub-task
@@ -108,7 +124,8 @@ You can edit this file in any text editor. The app detects external changes and 
 - **Automatic backups** — timestamped on every save, rotating retention
 - **Stats & metrics** — items created/completed, avg time in-progress, most active project — all from real history data
 - **Import/Export** — Markdown or JSON, with checksum validation
-- **Admin page** — health monitoring, backup browser, stats overview, manual actions
+- **Archive** — move done/cancelled items to separate `archive.md` to reduce clutter; searchable archive with restore capability; items return to original location
+- **Admin page** — health monitoring, backup browser, archive manager, stats overview, manual actions
 - **Dark mode** — system / light / dark, configurable in Admin → Appearance; persisted across reloads
 - **Icon sets** — 4 styles (Color, Flat, Emoji, ASCII), configurable in Admin → Appearance; persisted across reloads
 - **Chrome / Edge direct file access** — reads and writes `backlog.md` on disk directly via the File System Access API; no server needed
@@ -179,8 +196,9 @@ personal-backlog/
 │       ├── architecture.md               # High-level architecture
 │       └── tdd.md                        # Technical Design Document
 ├── server/
-│   ├── server.py                         # Python REST API server (~420 LoC, stdlib only)
+│   ├── server.py                         # Python REST API server (~450 LoC, stdlib only)
 │   ├── backlog.md                        # Master data file (created on first run)
+│   ├── archive.md                        # Archived items (created on first archive)
 │   ├── backups/                          # Automatic timestamped backups
 │   └── stats.jsonl                       # Append-only analytics log
 ├── web/                                  # V2 source code (React 18 + JSX) + build tooling

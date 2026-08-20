@@ -1304,3 +1304,99 @@ input { font: inherit; color: inherit; }
   .field-row { grid-template-columns: 1fr; }
   .status-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ---------- Archive Manager ---------- */
+.archive-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--rule-2); }
+.archive-section:first-of-type { margin-top: 8px; padding-top: 0; border-top: 0; }
+.archive-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 12px; flex-wrap: wrap;
+}
+.archive-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.archive-filter {
+  padding: 4px 8px; font-size: 12px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+}
+.archive-search {
+  padding: 4px 10px; font-size: 12px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+  width: 160px;
+}
+.archive-search::placeholder { color: var(--ink-3); }
+.archive-empty {
+  padding: 20px; text-align: center;
+  color: var(--ink-3); font-size: 13px;
+}
+.archive-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 280px; overflow-y: auto;
+}
+.archive-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; background: var(--bg); border-radius: var(--radius);
+  font-size: 13px; cursor: pointer;
+  transition: background 0.12s;
+}
+.archive-item:hover { background: var(--bg-2); }
+.archive-item.archived { cursor: default; }
+.archive-item input[type="checkbox"] { flex-shrink: 0; }
+.archive-item .glyph { flex-shrink: 0; width: 18px; text-align: center; }
+.archive-item-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-item-children {
+  font-size: 11px; color: var(--ink-3);
+  padding: 2px 6px; background: var(--rule-2); border-radius: 3px;
+}
+.archive-item-date { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.archive-more { padding: 8px; text-align: center; font-size: 12px; color: var(--ink-3); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-xs { padding: 2px 8px; font-size: 11px; }
+
+/* ---------- Archive Search Results ---------- */
+.archive-search-section {
+  margin-top: 16px; padding-top: 16px;
+  border-top: 1px dashed var(--rule);
+}
+.archive-search-toggle {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px; font-weight: 500; color: var(--ink-2);
+  background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.archive-search-toggle:hover { background: var(--bg-2); color: var(--ink); }
+.archive-loading { color: var(--ink-3); font-style: italic; }
+.archive-count { color: var(--ink-3); }
+.archive-search-results {
+  margin-top: 8px; padding: 8px;
+  background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius);
+}
+.archive-search-empty {
+  padding: 12px; text-align: center;
+  color: var(--ink-3); font-size: 13px;
+}
+.archive-search-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  transition: background 0.12s;
+}
+.archive-search-item:hover { background: var(--bg-2); }
+.archive-search-item .glyph { flex-shrink: 0; width: 18px; text-align: center; }
+.archive-search-title { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-search-date { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.archive-search-more { padding: 8px; text-align: center; font-size: 12px; color: var(--ink-3); }
+.archive-search-header {
+  font-size: 12px; font-weight: 600; color: var(--ink-2);
+  padding: 4px 0; margin-bottom: 8px;
+}
+.archive-match-hint { font-size: 14px; color: var(--ink-3); font-weight: 400; }
+.rte-readonly {
+  padding: 10px 12px; background: var(--bg); border: 1px solid var(--rule);
+  border-radius: var(--radius); font-size: 13px; line-height: 1.5; color: var(--ink-2);
+  min-height: 60px; max-height: 200px; overflow-y: auto;
+}
+.rte-readonly:empty::before { content: 'No details'; color: var(--ink-3); }
+.tag-list-readonly { display: flex; flex-wrap: wrap; gap: 6px; }
