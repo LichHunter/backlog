@@ -70,9 +70,30 @@ const Parser = {
     const uid = () => 'i-' + (++idSeq).toString(36);
 
     const entries = [];
-    const stack = [{ children: entries, depth: -1, level: 0 }];
+    const stack = [{ children: entries, depth: -1, level: 0, item: null }];
+    const lines = entriesText.split('\n');
 
-    for (const line of entriesText.split('\n')) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Check for body line (starts with whitespace + "> ")
+      const bodyMatch = line.match(/^(\s*)>\s?(.*)$/);
+      if (bodyMatch) {
+        // Body line - attach to current item at matching depth
+        const bodyDepth = bodyMatch[1].length / 2;
+        const bodyLine = bodyMatch[2];
+        // Find the item at this depth
+        for (let j = stack.length - 1; j >= 0; j--) {
+          if (stack[j].depth === bodyDepth && stack[j].item) {
+            if (!stack[j].item.body) stack[j].item.body = '';
+            else stack[j].item.body += '\n';
+            stack[j].item.body += bodyLine;
+            break;
+          }
+        }
+        continue;
+      }
+
       const m = line.match(/^(\s*)[-*]\s*\[([ x!>/\-])\]\s*(.*)$/);
       if (!m) continue;
 
@@ -108,9 +129,10 @@ const Parser = {
         progress: status === 'done' ? 100 : progress,
         collapsed: false,
         children: [],
+        body: null,
       };
       stack[stack.length - 1].children.push(item);
-      stack.push({ children: item.children, depth, level: item.level });
+      stack.push({ children: item.children, depth, level: item.level, item });
     }
 
     return { entries, history, meta, checksumOk };
@@ -143,6 +165,12 @@ const Parser = {
       const metaStr = meta.length ? ` *(${meta.join(', ')})*` : '';
       const prefix  = it.priority ? `[${it.priority}] ` : '';
       lines.push(`${indent}- [${GLYPH[it.status] || ' '}] ${prefix}${it.title}${metaStr}`);
+      // Serialize body as indented blockquote lines
+      if (it.body) {
+        for (const bodyLine of it.body.split('\n')) {
+          lines.push(`${indent}> ${bodyLine}`);
+        }
+      }
       if (it.children?.length) {
         lines.push(...this._serializeEntries(it.children, depth + 1).split('\n'));
       }

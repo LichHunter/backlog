@@ -100,7 +100,7 @@ function filterTree(items, f) {
     }
     if (f.text) {
       const q = f.text.toLowerCase();
-      const hay = [it.title, it.reason, ...(it.tags || [])].filter(Boolean).join(" ").toLowerCase();
+      const hay = [it.title, it.body, it.reason, ...(it.tags || [])].filter(Boolean).join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -358,10 +358,173 @@ function ProgressGauge({ value, onClick, interactive = false, size = "sm" }) {
   );
 }
 
+// ---- Markdown ↔ HTML conversion (lightweight, no external deps) ----
+const MarkdownUtils = {
+  // Convert markdown to HTML for rendering in editor
+  toHtml(md) {
+    if (!md) return '';
+    let html = md;
+
+    // Escape HTML entities first
+    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Code blocks (``` ... ```) - must be before inline code
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+      `<pre class="rte-code-block" data-lang="${lang}"><code>${code.trim()}</code></pre>`);
+
+    // Tables
+    html = html.replace(/^\|(.+)\|\s*\n\|[-:| ]+\|\s*\n((?:\|.+\|\s*\n?)+)/gm, (_, header, body) => {
+      const headers = header.split('|').map(c => c.trim()).filter(Boolean);
+      const rows = body.trim().split('\n').map(row =>
+        row.split('|').map(c => c.trim()).filter(Boolean)
+      );
+      return `<table class="rte-table"><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    });
+
+    // Images (base64 or URL)
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="rte-img">');
+
+    // Links
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+    // Bold **text** or __text__
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+
+    // Italic *text* or _text_ (not inside words)
+    html = html.replace(/(?<![*\w])\*([^*\n]+)\*(?![*\w])/g, '<em>$1</em>');
+    html = html.replace(/(?<![_\w])_([^_\n]+)_(?![_\w])/g, '<em>$1</em>');
+
+    // Inline code `code`
+    html = html.replace(/`([^`]+)`/g, '<code class="rte-inline-code">$1</code>');
+
+    // Headings
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+    // Lists - unordered
+    html = html.replace(/^[-*] (.+)$/gm, '<li data-list="ul">$1</li>');
+    // Lists - ordered
+    html = html.replace(/^\d+\. (.+)$/gm, '<li data-list="ol">$1</li>');
+
+    // Wrap consecutive list items
+    html = html.replace(/((?:<li data-list="ul">.+<\/li>\s*)+)/g, '<ul>$1</ul>');
+    html = html.replace(/((?:<li data-list="ol">.+<\/li>\s*)+)/g, '<ol>$1</ol>');
+    html = html.replace(/ data-list="[uo]l"/g, '');
+
+    // Paragraphs - wrap remaining text blocks
+    html = html.split('\n\n').map(block => {
+      block = block.trim();
+      if (!block) return '';
+      if (/^<(h[1-3]|ul|ol|pre|table|p)/.test(block)) return block;
+      if (block.includes('<')) return block; // Already has HTML
+      return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+    }).join('\n');
+
+    return html;
+  },
+
+  // Convert HTML from editor back to markdown
+  toMarkdown(html) {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return this._nodeToMd(doc.body).trim();
+  },
+
+  _nodeToMd(node) {
+    let md = '';
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        md += child.textContent;
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const tag = child.tagName.toLowerCase();
+        const inner = this._nodeToMd(child);
+        switch (tag) {
+          case 'strong': case 'b': md += `**${inner}**`; break;
+          case 'em': case 'i': md += `*${inner}*`; break;
+          case 'code':
+            if (child.parentElement?.tagName === 'PRE') md += inner;
+            else md += `\`${inner}\``;
+            break;
+          case 'pre': md += `\`\`\`\n${inner}\n\`\`\`\n\n`; break;
+          case 'a': md += `[${inner}](${child.getAttribute('href') || ''})`; break;
+          case 'img': md += `![${child.getAttribute('alt') || ''}](${child.getAttribute('src') || ''})`; break;
+          case 'h1': md += `# ${inner}\n\n`; break;
+          case 'h2': md += `## ${inner}\n\n`; break;
+          case 'h3': md += `### ${inner}\n\n`; break;
+          case 'p': md += `${inner}\n\n`; break;
+          case 'br': md += '\n'; break;
+          case 'li': md += `- ${inner}\n`; break;
+          case 'ul': case 'ol': md += inner + '\n'; break;
+          case 'table': md += this._tableToMd(child) + '\n\n'; break;
+          case 'thead': case 'tbody': case 'tr': case 'th': case 'td': md += inner; break;
+          case 'div': md += inner + '\n'; break;
+          default: md += inner;
+        }
+      }
+    }
+    return md;
+  },
+
+  _tableToMd(table) {
+    const rows = Array.from(table.querySelectorAll('tr'));
+    if (!rows.length) return '';
+    const lines = [];
+    rows.forEach((row, i) => {
+      const cells = Array.from(row.querySelectorAll('th, td')).map(c => c.textContent.trim());
+      lines.push('| ' + cells.join(' | ') + ' |');
+      if (i === 0) lines.push('|' + cells.map(() => '---').join('|') + '|');
+    });
+    return lines.join('\n');
+  },
+
+  // Convert HTML to plain text
+  toPlainText(html) {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return doc.body.textContent || '';
+  }
+};
+
+// ---- Clipboard utilities for multiple formats ----
+const ClipboardUtils = {
+  // Copy to clipboard with multiple formats (HTML primary, plain text also)
+  async copyHtml(html, markdown) {
+    const plain = MarkdownUtils.toPlainText(html);
+    try {
+      // Modern API: write multiple formats
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([plain], { type: 'text/plain' })
+        })
+      ]);
+      return true;
+    } catch {
+      // Fallback: plain text only
+      await navigator.clipboard.writeText(plain);
+      return true;
+    }
+  },
+
+  async copyMarkdown(markdown) {
+    await navigator.clipboard.writeText(markdown);
+    return true;
+  },
+
+  async copyPlainText(html) {
+    const plain = MarkdownUtils.toPlainText(html);
+    await navigator.clipboard.writeText(plain);
+    return true;
+  }
+};
+
 Object.assign(window, {
   STATUSES, STATUS_BY_KEY, STATUS_ORDER, PRIORITIES,
   parseDate, daysBetween, isOverdue, dueRelative, fmtTimestamp, fmtBytes, fmtRelative, fmtShortDate,
   walkTree, findItem, allTags, countAll, countByStatus, filterTree,
   Icon, StatusIcon, ColorStatusIcon, STATUS_COLORS, STATUS_EMOJI, StatusStyleContext,
-  PROGRESS_STEPS, snapProgress, progressFor, shouldShowProgress, cycleProgress, ProgressGauge
+  PROGRESS_STEPS, snapProgress, progressFor, shouldShowProgress, cycleProgress, ProgressGauge,
+  MarkdownUtils, ClipboardUtils
 });

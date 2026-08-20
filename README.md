@@ -73,6 +73,9 @@ All your tasks live in `backlog.md`, structured as:
 <!-- SECTION: ENTRIES -->
 
 - [ ] [P0] Ship landing page *(due: 2025-06-01, priority: P0, progress: 50)*
+  > This is the **body** with rich text details.
+  > - Milestone 1: Design
+  > - Milestone 2: Build
   - [x] Design mockups *(priority: P0, progress: 100)*
   - [/] Implement frontend *(priority: P1, progress: 30)*
 - [!] [P1] API integration *(priority: P1, reason: waiting for keys)*
@@ -97,9 +100,10 @@ You can edit this file in any text editor. The app detects external changes and 
 - **6 statuses** — open, in-progress (`/`), blocked (`!`), postponed (`>`), done (`x`), cancelled (`-`)
 - **Priorities** — P0 (burning) through P3, with drag-and-drop reordering within each priority
 - **Progress tracking** — 0–100% per task; done auto-sets to 100%
+- **Rich text body** — optional details field with WYSIWYG editor (bold, italic, links, headings, lists, code blocks, tables, images); stored as markdown; copy to clipboard as HTML (for Google Docs/Word), Markdown, or plain text
 - **Due dates** — with overdue highlighting
 - **Tags** — free-form labels with autocomplete
-- **Quick search** — instant text search with hierarchical parent visibility
+- **Quick search** — instant text search across title, body, and tags with hierarchical parent visibility
 - **Integrity checks** — SHA-256 checksum on every save; warning-only on mismatch
 - **Automatic backups** — timestamped on every save, rotating retention
 - **Stats & metrics** — items created/completed, avg time in-progress, most active project — all from real history data

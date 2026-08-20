@@ -101,6 +101,11 @@ html[data-theme="dark"] .restore-warn-title { color: oklch(0.92 0.05 75); }
 html[data-theme="dark"] .restore-warn-body  { color: oklch(0.78 0.04 70); }
 html[data-theme="dark"] .restore-warn-body code { background: oklch(0 0 0 / 0.30); }
 html[data-theme="dark"] .drag-handle { color: oklch(0.50 0.005 60); }
+html[data-theme="dark"] .rte-toolbar { background: oklch(0.25 0.010 60); }
+html[data-theme="dark"] .rte-code-block,
+html[data-theme="dark"] .rte-inline-code { background: oklch(0.25 0.010 60); }
+html[data-theme="dark"] .rte-table th { background: oklch(0.25 0.010 60); }
+html[data-theme="dark"] .rte-table td { background: oklch(0.22 0.008 60); }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; }
@@ -1061,6 +1066,197 @@ input { font: inherit; color: inherit; }
   background: var(--bg-2); color: var(--ink-2);
 }
 
+/* ---------- Rich Text Editor ---------- */
+.rte-wrap {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.rte-wrap:focus-within {
+  border-color: var(--accent-edge);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--paper);
+}
+
+.rte-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg-2);
+  flex-wrap: wrap;
+}
+.rte-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: transparent;
+  transition: background 0.1s, color 0.1s;
+}
+.rte-toolbar button:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+.rte-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--rule);
+  margin: 0 4px;
+}
+.rte-copy-btn {
+  width: auto !important;
+  padding: 0 6px;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.rte-copy-menu {
+  position: fixed;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  padding: 4px;
+  z-index: 100;
+  min-width: 160px;
+}
+.rte-copy-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.rte-copy-menu button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.rte-editor {
+  min-height: 80px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink);
+  outline: none;
+}
+.rte-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.rte-editor p { margin: 0 0 0.75em; }
+.rte-editor p:last-child { margin-bottom: 0; }
+.rte-editor h1, .rte-editor h2, .rte-editor h3 {
+  margin: 0.8em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.rte-editor h1:first-child,
+.rte-editor h2:first-child,
+.rte-editor h3:first-child { margin-top: 0; }
+.rte-editor h1 { font-size: 1.3em; }
+.rte-editor h2 { font-size: 1.15em; }
+.rte-editor h3 { font-size: 1em; }
+.rte-editor ul, .rte-editor ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.rte-editor li { margin: 0.25em 0; }
+.rte-editor a {
+  color: var(--accent-deep);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rte-editor a:hover { color: var(--accent); }
+.rte-editor strong { font-weight: 600; }
+.rte-editor em { font-style: italic; }
+
+.rte-inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  background: var(--bg-2);
+  border-radius: 3px;
+  color: var(--ink);
+}
+.rte-code-block {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border-radius: var(--radius);
+  margin: 0.75em 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+.rte-code-block code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.rte-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 12.5px;
+}
+.rte-table th, .rte-table td {
+  border: 1px solid var(--rule);
+  padding: 6px 10px;
+  text-align: left;
+}
+.rte-table th {
+  background: var(--bg-2);
+  font-weight: 600;
+}
+.rte-table td { background: var(--paper); }
+
+.rte-img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  margin: 0.5em 0;
+}
+
+/* Collapsed state */
+.rte-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  min-height: 40px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.rte-collapsed:hover {
+  border-color: var(--accent-edge);
+  background: var(--paper);
+}
+.rte-collapsed-placeholder {
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
 /* ---------- Import / Export dialog ---------- */
 .ie-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--rule); align-items: stretch; }
 .ie-tab {
@@ -1576,7 +1772,7 @@ function filterTree(items, f) {
     }
     if (f.text) {
       const q = f.text.toLowerCase();
-      const hay = [it.title, it.reason, ...(it.tags || [])].filter(Boolean).join(" ").toLowerCase();
+      const hay = [it.title, it.body, it.reason, ...(it.tags || [])].filter(Boolean).join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -2286,6 +2482,197 @@ function ProgressGauge({
     className: "gauge-num"
   }, v, "%"));
 }
+
+// ---- Markdown ↔ HTML conversion (lightweight, no external deps) ----
+const MarkdownUtils = {
+  // Convert markdown to HTML for rendering in editor
+  toHtml(md) {
+    if (!md) return '';
+    let html = md;
+
+    // Escape HTML entities first
+    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Code blocks (``` ... ```) - must be before inline code
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre class="rte-code-block" data-lang="${lang}"><code>${code.trim()}</code></pre>`);
+
+    // Tables
+    html = html.replace(/^\|(.+)\|\s*\n\|[-:| ]+\|\s*\n((?:\|.+\|\s*\n?)+)/gm, (_, header, body) => {
+      const headers = header.split('|').map(c => c.trim()).filter(Boolean);
+      const rows = body.trim().split('\n').map(row => row.split('|').map(c => c.trim()).filter(Boolean));
+      return `<table class="rte-table"><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    });
+
+    // Images (base64 or URL)
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="rte-img">');
+
+    // Links
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+    // Bold **text** or __text__
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+
+    // Italic *text* or _text_ (not inside words)
+    html = html.replace(/(?<![*\w])\*([^*\n]+)\*(?![*\w])/g, '<em>$1</em>');
+    html = html.replace(/(?<![_\w])_([^_\n]+)_(?![_\w])/g, '<em>$1</em>');
+
+    // Inline code `code`
+    html = html.replace(/`([^`]+)`/g, '<code class="rte-inline-code">$1</code>');
+
+    // Headings
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+    // Lists - unordered
+    html = html.replace(/^[-*] (.+)$/gm, '<li data-list="ul">$1</li>');
+    // Lists - ordered
+    html = html.replace(/^\d+\. (.+)$/gm, '<li data-list="ol">$1</li>');
+
+    // Wrap consecutive list items
+    html = html.replace(/((?:<li data-list="ul">.+<\/li>\s*)+)/g, '<ul>$1</ul>');
+    html = html.replace(/((?:<li data-list="ol">.+<\/li>\s*)+)/g, '<ol>$1</ol>');
+    html = html.replace(/ data-list="[uo]l"/g, '');
+
+    // Paragraphs - wrap remaining text blocks
+    html = html.split('\n\n').map(block => {
+      block = block.trim();
+      if (!block) return '';
+      if (/^<(h[1-3]|ul|ol|pre|table|p)/.test(block)) return block;
+      if (block.includes('<')) return block; // Already has HTML
+      return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+    }).join('\n');
+    return html;
+  },
+  // Convert HTML from editor back to markdown
+  toMarkdown(html) {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return this._nodeToMd(doc.body).trim();
+  },
+  _nodeToMd(node) {
+    let md = '';
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        md += child.textContent;
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const tag = child.tagName.toLowerCase();
+        const inner = this._nodeToMd(child);
+        switch (tag) {
+          case 'strong':
+          case 'b':
+            md += `**${inner}**`;
+            break;
+          case 'em':
+          case 'i':
+            md += `*${inner}*`;
+            break;
+          case 'code':
+            if (child.parentElement?.tagName === 'PRE') md += inner;else md += `\`${inner}\``;
+            break;
+          case 'pre':
+            md += `\`\`\`\n${inner}\n\`\`\`\n\n`;
+            break;
+          case 'a':
+            md += `[${inner}](${child.getAttribute('href') || ''})`;
+            break;
+          case 'img':
+            md += `![${child.getAttribute('alt') || ''}](${child.getAttribute('src') || ''})`;
+            break;
+          case 'h1':
+            md += `# ${inner}\n\n`;
+            break;
+          case 'h2':
+            md += `## ${inner}\n\n`;
+            break;
+          case 'h3':
+            md += `### ${inner}\n\n`;
+            break;
+          case 'p':
+            md += `${inner}\n\n`;
+            break;
+          case 'br':
+            md += '\n';
+            break;
+          case 'li':
+            md += `- ${inner}\n`;
+            break;
+          case 'ul':
+          case 'ol':
+            md += inner + '\n';
+            break;
+          case 'table':
+            md += this._tableToMd(child) + '\n\n';
+            break;
+          case 'thead':
+          case 'tbody':
+          case 'tr':
+          case 'th':
+          case 'td':
+            md += inner;
+            break;
+          case 'div':
+            md += inner + '\n';
+            break;
+          default:
+            md += inner;
+        }
+      }
+    }
+    return md;
+  },
+  _tableToMd(table) {
+    const rows = Array.from(table.querySelectorAll('tr'));
+    if (!rows.length) return '';
+    const lines = [];
+    rows.forEach((row, i) => {
+      const cells = Array.from(row.querySelectorAll('th, td')).map(c => c.textContent.trim());
+      lines.push('| ' + cells.join(' | ') + ' |');
+      if (i === 0) lines.push('|' + cells.map(() => '---').join('|') + '|');
+    });
+    return lines.join('\n');
+  },
+  // Convert HTML to plain text
+  toPlainText(html) {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return doc.body.textContent || '';
+  }
+};
+
+// ---- Clipboard utilities for multiple formats ----
+const ClipboardUtils = {
+  // Copy to clipboard with multiple formats (HTML primary, plain text also)
+  async copyHtml(html, markdown) {
+    const plain = MarkdownUtils.toPlainText(html);
+    try {
+      // Modern API: write multiple formats
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([html], {
+          type: 'text/html'
+        }),
+        'text/plain': new Blob([plain], {
+          type: 'text/plain'
+        })
+      })]);
+      return true;
+    } catch {
+      // Fallback: plain text only
+      await navigator.clipboard.writeText(plain);
+      return true;
+    }
+  },
+  async copyMarkdown(markdown) {
+    await navigator.clipboard.writeText(markdown);
+    return true;
+  },
+  async copyPlainText(html) {
+    const plain = MarkdownUtils.toPlainText(html);
+    await navigator.clipboard.writeText(plain);
+    return true;
+  }
+};
 Object.assign(window, {
   STATUSES,
   STATUS_BY_KEY,
@@ -2316,7 +2703,9 @@ Object.assign(window, {
   progressFor,
   shouldShowProgress,
   cycleProgress,
-  ProgressGauge
+  ProgressGauge,
+  MarkdownUtils,
+  ClipboardUtils
 });
 </script>
   <script>
@@ -2403,9 +2792,29 @@ const Parser = {
     const stack = [{
       children: entries,
       depth: -1,
-      level: 0
+      level: 0,
+      item: null
     }];
-    for (const line of entriesText.split('\n')) {
+    const lines = entriesText.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Check for body line (starts with whitespace + "> ")
+      const bodyMatch = line.match(/^(\s*)>\s?(.*)$/);
+      if (bodyMatch) {
+        // Body line - attach to current item at matching depth
+        const bodyDepth = bodyMatch[1].length / 2;
+        const bodyLine = bodyMatch[2];
+        // Find the item at this depth
+        for (let j = stack.length - 1; j >= 0; j--) {
+          if (stack[j].depth === bodyDepth && stack[j].item) {
+            if (!stack[j].item.body) stack[j].item.body = '';else stack[j].item.body += '\n';
+            stack[j].item.body += bodyLine;
+            break;
+          }
+        }
+        continue;
+      }
       const m = line.match(/^(\s*)[-*]\s*\[([ x!>/\-])\]\s*(.*)$/);
       if (!m) continue;
       const depth = m[1].length / 2;
@@ -2444,13 +2853,15 @@ const Parser = {
         tags,
         progress: status === 'done' ? 100 : progress,
         collapsed: false,
-        children: []
+        children: [],
+        body: null
       };
       stack[stack.length - 1].children.push(item);
       stack.push({
         children: item.children,
         depth,
-        level: item.level
+        level: item.level,
+        item
       });
     }
     return {
@@ -2493,6 +2904,12 @@ const Parser = {
       const metaStr = meta.length ? ` *(${meta.join(', ')})*` : '';
       const prefix = it.priority ? `[${it.priority}] ` : '';
       lines.push(`${indent}- [${GLYPH[it.status] || ' '}] ${prefix}${it.title}${metaStr}`);
+      // Serialize body as indented blockquote lines
+      if (it.body) {
+        for (const bodyLine of it.body.split('\n')) {
+          lines.push(`${indent}> ${bodyLine}`);
+        }
+      }
       if (it.children?.length) {
         lines.push(...this._serializeEntries(it.children, depth + 1).split('\n'));
       }
@@ -4209,8 +4626,388 @@ window.BacklogTree = BacklogTree;
 const {
   useState: useStateD,
   useEffect: useEffectD,
-  useRef: useRefD
+  useRef: useRefD,
+  useCallback: useCallbackD
 } = React;
+
+// ---- Rich Text Editor (lightweight WYSIWYG using contenteditable) ----
+function RichTextEditor({
+  value,
+  onChange,
+  placeholder = "Add details...",
+  collapsed = false,
+  onExpand
+}) {
+  const editorRef = useRefD(null);
+  const [isExpanded, setIsExpanded] = useStateD(!collapsed || !!value);
+  const [showCopyMenu, setShowCopyMenu] = useStateD(false);
+  const [copyMenuPos, setCopyMenuPos] = useStateD({
+    x: 0,
+    y: 0
+  });
+  const toolbarRef = useRefD(null);
+
+  // Initialize editor content
+  useEffectD(() => {
+    if (editorRef.current && value !== undefined) {
+      const html = MarkdownUtils.toHtml(value || '');
+      if (editorRef.current.innerHTML !== html) {
+        editorRef.current.innerHTML = html;
+      }
+    }
+  }, [value]);
+  const handleInput = useCallbackD(() => {
+    if (editorRef.current) {
+      const md = MarkdownUtils.toMarkdown(editorRef.current.innerHTML);
+      onChange?.(md || null);
+    }
+  }, [onChange]);
+  const execCmd = useCallbackD((cmd, val = null) => {
+    editorRef.current?.focus();
+    document.execCommand(cmd, false, val);
+    handleInput();
+  }, [handleInput]);
+  const handleKeyDown = useCallbackD(e => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      execCmd('insertText', '  ');
+    }
+    // Ctrl/Cmd + B/I/K shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'b') {
+        e.preventDefault();
+        execCmd('bold');
+      }
+      if (e.key === 'i') {
+        e.preventDefault();
+        execCmd('italic');
+      }
+      if (e.key === 'k') {
+        e.preventDefault();
+        insertLink();
+      }
+    }
+  }, [execCmd]);
+  const insertLink = useCallbackD(() => {
+    const url = prompt('Enter URL:');
+    if (url) execCmd('createLink', url);
+  }, [execCmd]);
+  const insertImage = useCallbackD(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async e => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        execCmd('insertHTML', `<img src="${reader.result}" alt="${file.name}" class="rte-img">`);
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  }, [execCmd]);
+  const insertTable = useCallbackD(() => {
+    const html = '<table class="rte-table"><thead><tr><th>Header 1</th><th>Header 2</th></tr></thead><tbody><tr><td>Cell 1</td><td>Cell 2</td></tr></tbody></table><p><br></p>';
+    execCmd('insertHTML', html);
+  }, [execCmd]);
+  const insertCodeBlock = useCallbackD(() => {
+    execCmd('insertHTML', '<pre class="rte-code-block"><code>code here</code></pre><p><br></p>');
+  }, [execCmd]);
+  const handleCopyMenu = useCallbackD(e => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setCopyMenuPos({
+      x: rect.left,
+      y: rect.bottom + 4
+    });
+    setShowCopyMenu(true);
+  }, []);
+  const copyAs = useCallbackD(async format => {
+    setShowCopyMenu(false);
+    const html = editorRef.current?.innerHTML || '';
+    const md = MarkdownUtils.toMarkdown(html);
+    if (format === 'html') await ClipboardUtils.copyHtml(html, md);else if (format === 'markdown') await ClipboardUtils.copyMarkdown(md);else if (format === 'text') await ClipboardUtils.copyPlainText(html);
+  }, []);
+  const expand = useCallbackD(() => {
+    setIsExpanded(true);
+    onExpand?.();
+    setTimeout(() => editorRef.current?.focus(), 50);
+  }, [onExpand]);
+
+  // Close copy menu on outside click
+  useEffectD(() => {
+    if (!showCopyMenu) return;
+    const close = () => setShowCopyMenu(false);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [showCopyMenu]);
+  if (!isExpanded) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "rte-collapsed",
+      onClick: expand
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "rte-collapsed-placeholder"
+    }, placeholder), /*#__PURE__*/React.createElement(Icon, {
+      name: "plus",
+      size: 12
+    }));
+  }
+  return /*#__PURE__*/React.createElement("div", {
+    className: "rte-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "rte-toolbar",
+    ref: toolbarRef
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => execCmd('bold'),
+    title: "Bold (Ctrl+B)"
+  }, /*#__PURE__*/React.createElement("strong", null, "B")), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => execCmd('italic'),
+    title: "Italic (Ctrl+I)"
+  }, /*#__PURE__*/React.createElement("em", null, "I")), /*#__PURE__*/React.createElement("span", {
+    className: "rte-toolbar-sep"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: insertLink,
+    title: "Link (Ctrl+K)"
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 20 20"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M8 12l4-4M6 10l-1 1a3 3 0 0 0 4.24 4.24l1-1M14 10l1-1a3 3 0 0 0-4.24-4.24l-1 1",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round"
+  }))), /*#__PURE__*/React.createElement("span", {
+    className: "rte-toolbar-sep"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => execCmd('formatBlock', 'h1'),
+    title: "Heading 1"
+  }, "H1"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => execCmd('formatBlock', 'h2'),
+    title: "Heading 2"
+  }, "H2"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => execCmd('formatBlock', 'h3'),
+    title: "Heading 3"
+  }, "H3"), /*#__PURE__*/React.createElement("span", {
+    className: "rte-toolbar-sep"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => execCmd('insertUnorderedList'),
+    title: "Bullet list"
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 20 20"
+  }, /*#__PURE__*/React.createElement("g", {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round"
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: "8",
+    y1: "6",
+    x2: "17",
+    y2: "6"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "8",
+    y1: "10",
+    x2: "17",
+    y2: "10"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "8",
+    y1: "14",
+    x2: "17",
+    y2: "14"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "4",
+    cy: "6",
+    r: "1",
+    fill: "currentColor"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "4",
+    cy: "10",
+    r: "1",
+    fill: "currentColor"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "4",
+    cy: "14",
+    r: "1",
+    fill: "currentColor"
+  })))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => execCmd('insertOrderedList'),
+    title: "Numbered list"
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 20 20"
+  }, /*#__PURE__*/React.createElement("g", {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round"
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: "8",
+    y1: "6",
+    x2: "17",
+    y2: "6"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "8",
+    y1: "10",
+    x2: "17",
+    y2: "10"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "8",
+    y1: "14",
+    x2: "17",
+    y2: "14"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: "3",
+    y: "7",
+    fontSize: "5",
+    fill: "currentColor",
+    stroke: "none"
+  }, "1"), /*#__PURE__*/React.createElement("text", {
+    x: "3",
+    y: "11",
+    fontSize: "5",
+    fill: "currentColor",
+    stroke: "none"
+  }, "2"), /*#__PURE__*/React.createElement("text", {
+    x: "3",
+    y: "15",
+    fontSize: "5",
+    fill: "currentColor",
+    stroke: "none"
+  }, "3")))), /*#__PURE__*/React.createElement("span", {
+    className: "rte-toolbar-sep"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: insertCodeBlock,
+    title: "Code block"
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 20 20"
+  }, /*#__PURE__*/React.createElement("g", {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("polyline", {
+    points: "7,5 3,10 7,15"
+  }), /*#__PURE__*/React.createElement("polyline", {
+    points: "13,5 17,10 13,15"
+  })))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: insertTable,
+    title: "Table"
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 20 20"
+  }, /*#__PURE__*/React.createElement("g", {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5"
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: "3",
+    y: "4",
+    width: "14",
+    height: "12",
+    rx: "1.5"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "3",
+    y1: "8",
+    x2: "17",
+    y2: "8"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "10",
+    y1: "8",
+    x2: "10",
+    y2: "16"
+  })))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: insertImage,
+    title: "Image"
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 20 20"
+  }, /*#__PURE__*/React.createElement("g", {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: "3",
+    y: "4",
+    width: "14",
+    height: "12",
+    rx: "1.5"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "7",
+    cy: "8",
+    r: "1.5"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M3 14l4-4 3 3 4-4 3 3"
+  })))), /*#__PURE__*/React.createElement("span", {
+    className: "rte-toolbar-sep"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: handleCopyMenu,
+    title: "Copy as...",
+    className: "rte-copy-btn"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "copy",
+    size: 12
+  }), /*#__PURE__*/React.createElement("svg", {
+    width: "8",
+    height: "8",
+    viewBox: "0 0 10 10"
+  }, /*#__PURE__*/React.createElement("polyline", {
+    points: "2,4 5,7 8,4",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  })))), showCopyMenu && /*#__PURE__*/React.createElement("div", {
+    className: "rte-copy-menu",
+    style: {
+      left: copyMenuPos.x,
+      top: copyMenuPos.y
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => copyAs('html')
+  }, "Copy for Docs/Word"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => copyAs('markdown')
+  }, "Copy as Markdown"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => copyAs('text')
+  }, "Copy as Plain Text")), /*#__PURE__*/React.createElement("div", {
+    ref: editorRef,
+    className: "rte-editor",
+    contentEditable: true,
+    onInput: handleInput,
+    onKeyDown: handleKeyDown,
+    "data-placeholder": placeholder,
+    onContextMenu: e => {
+      // Allow default context menu but add copy options via showCopyMenu
+    }
+  }));
+}
 function Dialog({
   open,
   onClose,
@@ -4285,6 +5082,7 @@ function ItemDialog({
   recentTags = []
 }) {
   const [title, setTitle] = useStateD("");
+  const [body, setBody] = useStateD(null);
   const [priority, setPriority] = useStateD("P2");
   const [status, setStatus] = useStateD("open");
   const [due, setDue] = useStateD("");
@@ -4296,6 +5094,7 @@ function ItemDialog({
   useEffectD(() => {
     if (!open) return;
     setTitle(initial?.title || "");
+    setBody(initial?.body || null);
     setPriority(initial?.priority || "P2");
     setStatus(initial?.status || "open");
     setDue(initial?.due || "");
@@ -4320,6 +5119,7 @@ function ItemDialog({
     if (status === "done") outProgress = 100;
     onSubmit({
       title: title.trim(),
+      body: body || null,
       priority,
       status,
       due: due || null,
@@ -4354,6 +5154,17 @@ function ItemDialog({
     onChange: e => setTitle(e.target.value),
     placeholder: "What needs to happen?",
     required: true
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "field-label"
+  }, "Details ", /*#__PURE__*/React.createElement("span", {
+    className: "field-hint"
+  }, "rich text, supports markdown")), /*#__PURE__*/React.createElement(RichTextEditor, {
+    value: body,
+    onChange: setBody,
+    placeholder: "Add notes, context, or details...",
+    collapsed: !body
   })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("div", {
@@ -4638,6 +5449,7 @@ function TagMatchHL({
 window.Dialog = Dialog;
 window.ItemDialog = ItemDialog;
 window.ConfirmDialog = ConfirmDialog;
+window.RichTextEditor = RichTextEditor;
 </script>
   <script>
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }

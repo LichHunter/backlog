@@ -1,6 +1,177 @@
 // Stylish dialog primitives + concrete dialogs (Edit/Add Item, Confirm).
 
-const { useState: useStateD, useEffect: useEffectD, useRef: useRefD } = React;
+const { useState: useStateD, useEffect: useEffectD, useRef: useRefD, useCallback: useCallbackD } = React;
+
+// ---- Rich Text Editor (lightweight WYSIWYG using contenteditable) ----
+function RichTextEditor({ value, onChange, placeholder = "Add details...", collapsed = false, onExpand }) {
+  const editorRef = useRefD(null);
+  const [isExpanded, setIsExpanded] = useStateD(!collapsed || !!value);
+  const [showCopyMenu, setShowCopyMenu] = useStateD(false);
+  const [copyMenuPos, setCopyMenuPos] = useStateD({ x: 0, y: 0 });
+  const toolbarRef = useRefD(null);
+
+  // Initialize editor content
+  useEffectD(() => {
+    if (editorRef.current && value !== undefined) {
+      const html = MarkdownUtils.toHtml(value || '');
+      if (editorRef.current.innerHTML !== html) {
+        editorRef.current.innerHTML = html;
+      }
+    }
+  }, [value]);
+
+  const handleInput = useCallbackD(() => {
+    if (editorRef.current) {
+      const md = MarkdownUtils.toMarkdown(editorRef.current.innerHTML);
+      onChange?.(md || null);
+    }
+  }, [onChange]);
+
+  const execCmd = useCallbackD((cmd, val = null) => {
+    editorRef.current?.focus();
+    document.execCommand(cmd, false, val);
+    handleInput();
+  }, [handleInput]);
+
+  const handleKeyDown = useCallbackD((e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      execCmd('insertText', '  ');
+    }
+    // Ctrl/Cmd + B/I/K shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'b') { e.preventDefault(); execCmd('bold'); }
+      if (e.key === 'i') { e.preventDefault(); execCmd('italic'); }
+      if (e.key === 'k') { e.preventDefault(); insertLink(); }
+    }
+  }, [execCmd]);
+
+  const insertLink = useCallbackD(() => {
+    const url = prompt('Enter URL:');
+    if (url) execCmd('createLink', url);
+  }, [execCmd]);
+
+  const insertImage = useCallbackD(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        execCmd('insertHTML', `<img src="${reader.result}" alt="${file.name}" class="rte-img">`);
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  }, [execCmd]);
+
+  const insertTable = useCallbackD(() => {
+    const html = '<table class="rte-table"><thead><tr><th>Header 1</th><th>Header 2</th></tr></thead><tbody><tr><td>Cell 1</td><td>Cell 2</td></tr></tbody></table><p><br></p>';
+    execCmd('insertHTML', html);
+  }, [execCmd]);
+
+  const insertCodeBlock = useCallbackD(() => {
+    execCmd('insertHTML', '<pre class="rte-code-block"><code>code here</code></pre><p><br></p>');
+  }, [execCmd]);
+
+  const handleCopyMenu = useCallbackD((e) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setCopyMenuPos({ x: rect.left, y: rect.bottom + 4 });
+    setShowCopyMenu(true);
+  }, []);
+
+  const copyAs = useCallbackD(async (format) => {
+    setShowCopyMenu(false);
+    const html = editorRef.current?.innerHTML || '';
+    const md = MarkdownUtils.toMarkdown(html);
+    if (format === 'html') await ClipboardUtils.copyHtml(html, md);
+    else if (format === 'markdown') await ClipboardUtils.copyMarkdown(md);
+    else if (format === 'text') await ClipboardUtils.copyPlainText(html);
+  }, []);
+
+  const expand = useCallbackD(() => {
+    setIsExpanded(true);
+    onExpand?.();
+    setTimeout(() => editorRef.current?.focus(), 50);
+  }, [onExpand]);
+
+  // Close copy menu on outside click
+  useEffectD(() => {
+    if (!showCopyMenu) return;
+    const close = () => setShowCopyMenu(false);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [showCopyMenu]);
+
+  if (!isExpanded) {
+    return (
+      <div className="rte-collapsed" onClick={expand}>
+        <span className="rte-collapsed-placeholder">{placeholder}</span>
+        <Icon name="plus" size={12} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rte-wrap">
+      <div className="rte-toolbar" ref={toolbarRef}>
+        <button type="button" onClick={() => execCmd('bold')} title="Bold (Ctrl+B)"><strong>B</strong></button>
+        <button type="button" onClick={() => execCmd('italic')} title="Italic (Ctrl+I)"><em>I</em></button>
+        <span className="rte-toolbar-sep" />
+        <button type="button" onClick={insertLink} title="Link (Ctrl+K)">
+          <svg width="14" height="14" viewBox="0 0 20 20"><path d="M8 12l4-4M6 10l-1 1a3 3 0 0 0 4.24 4.24l1-1M14 10l1-1a3 3 0 0 0-4.24-4.24l-1 1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+        </button>
+        <span className="rte-toolbar-sep" />
+        <button type="button" onClick={() => execCmd('formatBlock', 'h1')} title="Heading 1">H1</button>
+        <button type="button" onClick={() => execCmd('formatBlock', 'h2')} title="Heading 2">H2</button>
+        <button type="button" onClick={() => execCmd('formatBlock', 'h3')} title="Heading 3">H3</button>
+        <span className="rte-toolbar-sep" />
+        <button type="button" onClick={() => execCmd('insertUnorderedList')} title="Bullet list">
+          <svg width="14" height="14" viewBox="0 0 20 20"><g fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><line x1="8" y1="6" x2="17" y2="6"/><line x1="8" y1="10" x2="17" y2="10"/><line x1="8" y1="14" x2="17" y2="14"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="10" r="1" fill="currentColor"/><circle cx="4" cy="14" r="1" fill="currentColor"/></g></svg>
+        </button>
+        <button type="button" onClick={() => execCmd('insertOrderedList')} title="Numbered list">
+          <svg width="14" height="14" viewBox="0 0 20 20"><g fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><line x1="8" y1="6" x2="17" y2="6"/><line x1="8" y1="10" x2="17" y2="10"/><line x1="8" y1="14" x2="17" y2="14"/><text x="3" y="7" fontSize="5" fill="currentColor" stroke="none">1</text><text x="3" y="11" fontSize="5" fill="currentColor" stroke="none">2</text><text x="3" y="15" fontSize="5" fill="currentColor" stroke="none">3</text></g></svg>
+        </button>
+        <span className="rte-toolbar-sep" />
+        <button type="button" onClick={insertCodeBlock} title="Code block">
+          <svg width="14" height="14" viewBox="0 0 20 20"><g fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="7,5 3,10 7,15"/><polyline points="13,5 17,10 13,15"/></g></svg>
+        </button>
+        <button type="button" onClick={insertTable} title="Table">
+          <svg width="14" height="14" viewBox="0 0 20 20"><g fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="4" width="14" height="12" rx="1.5"/><line x1="3" y1="8" x2="17" y2="8"/><line x1="10" y1="8" x2="10" y2="16"/></g></svg>
+        </button>
+        <button type="button" onClick={insertImage} title="Image">
+          <svg width="14" height="14" viewBox="0 0 20 20"><g fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><rect x="3" y="4" width="14" height="12" rx="1.5"/><circle cx="7" cy="8" r="1.5"/><path d="M3 14l4-4 3 3 4-4 3 3"/></g></svg>
+        </button>
+        <span className="rte-toolbar-sep" />
+        <button type="button" onClick={handleCopyMenu} title="Copy as..." className="rte-copy-btn">
+          <Icon name="copy" size={12} />
+          <svg width="8" height="8" viewBox="0 0 10 10"><polyline points="2,4 5,7 8,4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+      </div>
+      {showCopyMenu && (
+        <div className="rte-copy-menu" style={{ left: copyMenuPos.x, top: copyMenuPos.y }}>
+          <button type="button" onClick={() => copyAs('html')}>Copy for Docs/Word</button>
+          <button type="button" onClick={() => copyAs('markdown')}>Copy as Markdown</button>
+          <button type="button" onClick={() => copyAs('text')}>Copy as Plain Text</button>
+        </div>
+      )}
+      <div
+        ref={editorRef}
+        className="rte-editor"
+        contentEditable
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        data-placeholder={placeholder}
+        onContextMenu={(e) => {
+          // Allow default context menu but add copy options via showCopyMenu
+        }}
+      />
+    </div>
+  );
+}
 
 function Dialog({ open, onClose, children, width = 460, labelledBy }) {
   useEffectD(() => {
@@ -43,6 +214,7 @@ function DialogHeader({ eyebrow, title, onClose, id }) {
 // --- Item editor (used for both edit and add) ---
 function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] }) {
   const [title, setTitle] = useStateD("");
+  const [body, setBody] = useStateD(null);
   const [priority, setPriority] = useStateD("P2");
   const [status, setStatus] = useStateD("open");
   const [due, setDue] = useStateD("");
@@ -55,6 +227,7 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
   useEffectD(() => {
     if (!open) return;
     setTitle(initial?.title || "");
+    setBody(initial?.body || null);
     setPriority(initial?.priority || "P2");
     setStatus(initial?.status || "open");
     setDue(initial?.due || "");
@@ -81,6 +254,7 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
     if (status === "done") outProgress = 100;
     onSubmit({
       title: title.trim(),
+      body: body || null,
       priority, status,
       due: due || null,
       tags,
@@ -111,6 +285,16 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               onChange={(e) => setTitle(e.target.value)}
               placeholder="What needs to happen?"
               required
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label">Details <span className="field-hint">rich text, supports markdown</span></label>
+            <RichTextEditor
+              value={body}
+              onChange={setBody}
+              placeholder="Add notes, context, or details..."
+              collapsed={!body}
             />
           </div>
 
@@ -370,3 +554,4 @@ function TagMatchHL({ text, match }) {
 window.Dialog = Dialog;
 window.ItemDialog = ItemDialog;
 window.ConfirmDialog = ConfirmDialog;
+window.RichTextEditor = RichTextEditor;
