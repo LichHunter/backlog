@@ -79,12 +79,13 @@ const Parser = {
       // Check for body line (starts with whitespace + "> ")
       const bodyMatch = line.match(/^(\s*)>\s?(.*)$/);
       if (bodyMatch) {
-        // Body line - attach to current item at matching depth
-        const bodyDepth = bodyMatch[1].length / 2;
+        // Body line - attach to the most recent item in the stack
+        // Body indent is one level deeper than its parent item (e.g., item at depth 0 has body at depth 1)
+        const bodyIndent = bodyMatch[1].length / 2;
         const bodyLine = bodyMatch[2];
-        // Find the item at this depth
+        // Find the item whose depth is bodyIndent - 1 (body is indented under its item)
         for (let j = stack.length - 1; j >= 0; j--) {
-          if (stack[j].depth === bodyDepth && stack[j].item) {
+          if (stack[j].item && stack[j].depth === bodyIndent - 1) {
             if (!stack[j].item.body) stack[j].item.body = '';
             else stack[j].item.body += '\n';
             stack[j].item.body += bodyLine;
@@ -165,10 +166,11 @@ const Parser = {
       const metaStr = meta.length ? ` *(${meta.join(', ')})*` : '';
       const prefix  = it.priority ? `[${it.priority}] ` : '';
       lines.push(`${indent}- [${GLYPH[it.status] || ' '}] ${prefix}${it.title}${metaStr}`);
-      // Serialize body as indented blockquote lines
+      // Serialize body as indented blockquote lines (one level deeper than item)
       if (it.body) {
+        const bodyIndent = '  '.repeat(depth + 1);
         for (const bodyLine of it.body.split('\n')) {
-          lines.push(`${indent}> ${bodyLine}`);
+          lines.push(`${bodyIndent}> ${bodyLine}`);
         }
       }
       if (it.children?.length) {

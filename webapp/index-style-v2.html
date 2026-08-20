@@ -2802,12 +2802,13 @@ const Parser = {
       // Check for body line (starts with whitespace + "> ")
       const bodyMatch = line.match(/^(\s*)>\s?(.*)$/);
       if (bodyMatch) {
-        // Body line - attach to current item at matching depth
-        const bodyDepth = bodyMatch[1].length / 2;
+        // Body line - attach to the most recent item in the stack
+        // Body indent is one level deeper than its parent item (e.g., item at depth 0 has body at depth 1)
+        const bodyIndent = bodyMatch[1].length / 2;
         const bodyLine = bodyMatch[2];
-        // Find the item at this depth
+        // Find the item whose depth is bodyIndent - 1 (body is indented under its item)
         for (let j = stack.length - 1; j >= 0; j--) {
-          if (stack[j].depth === bodyDepth && stack[j].item) {
+          if (stack[j].item && stack[j].depth === bodyIndent - 1) {
             if (!stack[j].item.body) stack[j].item.body = '';else stack[j].item.body += '\n';
             stack[j].item.body += bodyLine;
             break;
@@ -2904,10 +2905,11 @@ const Parser = {
       const metaStr = meta.length ? ` *(${meta.join(', ')})*` : '';
       const prefix = it.priority ? `[${it.priority}] ` : '';
       lines.push(`${indent}- [${GLYPH[it.status] || ' '}] ${prefix}${it.title}${metaStr}`);
-      // Serialize body as indented blockquote lines
+      // Serialize body as indented blockquote lines (one level deeper than item)
       if (it.body) {
+        const bodyIndent = '  '.repeat(depth + 1);
         for (const bodyLine of it.body.split('\n')) {
-          lines.push(`${indent}> ${bodyLine}`);
+          lines.push(`${bodyIndent}> ${bodyLine}`);
         }
       }
       if (it.children?.length) {
@@ -4647,24 +4649,17 @@ function RichTextEditor({
   });
   const toolbarRef = useRefD(null);
   const isEditingRef = useRefD(false);
-  const initializedRef = useRefD(false);
+  const prevValueRef = useRefD(value);
 
   // Initialize editor content only when value changes externally (not from our own edits)
   useEffectD(() => {
-    if (editorRef.current && value !== undefined && !isEditingRef.current) {
-      const html = MarkdownUtils.toHtml(value || '');
-      // Only set innerHTML on first load or when value is reset externally
-      if (!initializedRef.current || editorRef.current.innerHTML === '') {
+    if (editorRef.current && !isEditingRef.current) {
+      // Update if value changed from previous or editor is empty
+      if (prevValueRef.current !== value || editorRef.current.innerHTML === '') {
+        const html = MarkdownUtils.toHtml(value || '');
         editorRef.current.innerHTML = html;
-        initializedRef.current = true;
+        prevValueRef.current = value;
       }
-    }
-  }, [value]);
-
-  // Reset initialized flag when dialog closes/opens (value becomes null/undefined)
-  useEffectD(() => {
-    if (value === null || value === undefined) {
-      initializedRef.current = false;
     }
   }, [value]);
   const handleInput = useCallbackD(() => {

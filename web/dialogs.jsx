@@ -10,24 +10,17 @@ function RichTextEditor({ value, onChange, placeholder = "Add details...", colla
   const [copyMenuPos, setCopyMenuPos] = useStateD({ x: 0, y: 0 });
   const toolbarRef = useRefD(null);
   const isEditingRef = useRefD(false);
-  const initializedRef = useRefD(false);
+  const prevValueRef = useRefD(value);
 
   // Initialize editor content only when value changes externally (not from our own edits)
   useEffectD(() => {
-    if (editorRef.current && value !== undefined && !isEditingRef.current) {
-      const html = MarkdownUtils.toHtml(value || '');
-      // Only set innerHTML on first load or when value is reset externally
-      if (!initializedRef.current || editorRef.current.innerHTML === '') {
+    if (editorRef.current && !isEditingRef.current) {
+      // Update if value changed from previous or editor is empty
+      if (prevValueRef.current !== value || editorRef.current.innerHTML === '') {
+        const html = MarkdownUtils.toHtml(value || '');
         editorRef.current.innerHTML = html;
-        initializedRef.current = true;
+        prevValueRef.current = value;
       }
-    }
-  }, [value]);
-
-  // Reset initialized flag when dialog closes/opens (value becomes null/undefined)
-  useEffectD(() => {
-    if (value === null || value === undefined) {
-      initializedRef.current = false;
     }
   }, [value]);
 
