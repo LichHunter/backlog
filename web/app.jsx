@@ -157,6 +157,7 @@ function App() {
   const [archiveData, setArchiveData] = useStateMain({ entries: [], history: [] });
   const [projects, setProjects] = useStateMain([]);
   const [projectExpandedMap, setProjectExpandedMap] = useStateMain(() => loadLocalState()?.projectExpandedMap ?? {});
+  const [prompt, setPrompt] = useStateMain(null); // PromptDialog state {title, message, placeholder, onConfirm}
 
   const TWEAK_DEFAULTS = { accent_hue: 35, density: 'comfortable', show_ids: false, paper_texture: true, status_style: 'color', sort_mode: 'priority', theme: 'system' };
   const [tweaks, setTweak] = useTweaks({ ...TWEAK_DEFAULTS, ...(loadLocalState()?.tweaks ?? {}) });
@@ -626,6 +627,19 @@ function App() {
   };
 
   const submitItemDialog = (vals) => {
+    if (vals.createAsProject && vals.projectPath) {
+      const path = vals.projectPath;
+      setItemDialog(null);
+      ApiBackend.registerProject(path, vals.title || null)
+        .then(async (result) => {
+          if (!result.ok) throw new Error(result.error || 'Register failed');
+          await reloadProjects({ seedExpanded: false });
+          await SyncPoller.syncChecksums();
+          showToast(`Project registered: ${result.name}`);
+        })
+        .catch(e => showToast('Register failed: ' + e.message, 'err'));
+      return;
+    }
     if (itemDialog.mode === 'edit') {
       const editedItem = findItem(data.entries, itemDialog.itemId);
       mutate(d => {
@@ -650,7 +664,9 @@ function App() {
       const parentForTarget = itemDialog.mode === 'add-child' && itemDialog.parentId
         ? findItem(data.entries, itemDialog.parentId)
         : null;
-      const targetProjectId = resolveTargetProjectId(itemDialog.projectId || parentForTarget?._projectId || null);
+      const targetProjectId = resolveTargetProjectId(
+        vals.projectId || itemDialog.projectId || parentForTarget?._projectId || null
+      );
       mutate(d => {
         const node = { id: newId, level: 1, ...vals, children: [], collapsed: false };
         if (targetProjectId) node._projectId = targetProjectId;
@@ -675,6 +691,114 @@ function App() {
   };
 
   const setExpanded = (id, val) => setExpandedMap(m => ({ ...m, [id]: val }));
+
+  // ---- Project section actions (multi-project api mode, todo 6) ----
+  const toggleProjectExpanded = (projectId) => {
+    setProjectExpandedMap(m => {
+      const isExpanded = m[projectId] !== false;
+      return { ...m, [projectId]: !isExpanded };
+    });
+  };
+
+  // Cross-project drag&drop: tree rows only accept drops from their OWN tree
+  // (draggedId is local state per BacklogTree), so a drag that lands anywhere
+  // else in a section falls through to this drop zone. The dragged id travels
+  // in the text/plain payload set by the row's dragstart.
+  const sectionDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    e.currentTarget.classList.add('drop-target');
+  };
+  const sectionDragLeave = (e) => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.remove('drop-target');
+  };
+  const handleSectionDrop = (e, projectId) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drop-target');
+    let draggedId = null;
+    try { draggedId = e.dataTransfer.getData('text/plain') || null; }
+    catch { draggedId = null; } // protected drag data — nothing sensible to move
+    if (!draggedId) return;
+    const dragged = findItem(data.entries, draggedId);
+    if (!dragged) return;
+    const fromId = dragged._projectId ?? latestProjects.current[0]?.id;
+    if (fromId === projectId) return; // intra-project drops stay the tree's own reorder
+    onMutate.moveToProject(draggedId, projectId);
+  };
+
+  const handleRenameProject = (projectId) => {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+    setPrompt({
+      title: 'Rename project',
+      message: <>New name for <strong>{proj.name}</strong>?</>,
+      placeholder: proj.name,
+      confirmLabel: 'Rename',
+      onConfirm: async (newName) => {
+        if (!newName || newName === proj.name) return;
+        try {
+          const result = await ApiBackend.renameProject(projectId, newName);
+          if (!result.ok) throw new Error(result.error || 'Rename failed');
+          setProjectExpandedMap(prev => {
+            const next = { ...prev };
+            const was = next[projectId] ?? true;
+            delete next[projectId];
+            next[result.name] = was;
+            return next;
+          });
+          await reloadProjects({ seedExpanded: false });
+          await SyncPoller.syncChecksums();
+          showToast(`Renamed to ${result.name}`);
+        } catch (e) {
+          showToast('Rename failed: ' + e.message, 'err');
+        }
+      },
+    });
+  };
+
+  const handleRemoveProject = (projectId) => {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+    const itemCount = countAll(proj.entries);
+    setConfirm({
+      title: 'Delete project?',
+      message: <>Delete <strong>{proj.name}</strong> from the registry?</>,
+      detail: (
+        <span className="muted">
+          {`The file contains ${itemCount} item${itemCount !== 1 ? 's' : ''}. `}
+          Unregistering keeps the file on disk.
+        </span>
+      ),
+      checkbox: 'Also delete the file from disk',
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async (deleteFromDisk) => {
+        const del = deleteFromDisk === true;
+        setConfirm(null);
+        try {
+          const result = await ApiBackend.unregisterProject(projectId, del);
+          if (!result.ok) throw new Error(result.error || 'Delete failed');
+          // Optimistic removal of every trace — a partial clean would resurrect
+          // the section on the next reloadProjects.
+          latestProjects.current = latestProjects.current.filter(p => p.id !== projectId);
+          setProjects(prev => prev.filter(p => p.id !== projectId));
+          setData(prev => ({
+            ...prev,
+            entries: prev.entries.filter(e => e._projectId !== projectId),
+            history: prev.history.filter(h => h._projectId !== projectId),
+          }));
+          setProjectExpandedMap(prev => { const n = { ...prev }; delete n[projectId]; return n; });
+          await SyncPoller.syncChecksums();
+          showToast(result.warning
+            ? `Removed ${proj.name} — file not deleted: ${result.warning}`
+            : del ? `Deleted from disk: ${proj.name}` : `Removed: ${proj.name}`);
+        } catch (e) {
+          showToast('Delete failed: ' + e.message, 'err');
+        }
+      },
+    });
+  };
+
 
   const tagsList = useMemoMain(() => allTags(data.entries),          [data]);
   const counts   = useMemoMain(() => countByStatus(data.entries),    [data]);
@@ -1022,6 +1146,7 @@ function App() {
                    : saveState.status === 'error'  ? 'Save failed'
                    : `Saved · ${fmtTimestamp(saveState.lastSaved)}`;
   const hasFilters = filters.text || filters.statuses?.length || filters.priorities?.length || filters.tags?.length || filters.dueRange;
+  const isMulti = projects.length > 1; // UI gating only — the merged model is the single data path
 
   if (isLoading) {
     return (
@@ -1136,7 +1261,78 @@ function App() {
             </div>
 
             <div className="content-scroll">
-              {filtered.length === 0 ? (
+              {isMulti && projects.length > 0 ? (
+                <div className="project-sections">
+                  {projects.map(p => {
+                    const pidOf = e => e._projectId ?? projects[0]?.id;
+                    const projEntries = filtered.filter(e => pidOf(e) === p.id);
+                    const itemCount = countAll(data.entries.filter(e => pidOf(e) === p.id));
+                    const isExpanded = projectExpandedMap[p.id] !== false;
+                    const unhealthy = p.missing || p.error;
+                    return (
+                      <div key={p.id} className="project-section">
+                        <div
+                          className={`project-section-header ${isExpanded ? 'expanded' : 'collapsed'}${unhealthy ? ' missing' : ''}`}
+                          onClick={() => toggleProjectExpanded(p.id)}
+                          title={p.path}
+                        >
+                          <span className="project-section-chevron">
+                            <Icon name={isExpanded ? 'chevron' : 'chevronRight'} size={12}/>
+                          </span>
+                          <span className="project-section-name">{p.name}</span>
+                          {unhealthy && <span className="project-missing-badge">{p.missing ? 'missing' : 'error'}</span>}
+                          <span className="project-section-count">{itemCount} item{itemCount !== 1 ? 's' : ''}</span>
+                          <div className="project-section-actions">
+                            <button className="project-section-btn"
+                              title={`Add item to ${p.name}`}
+                              onClick={(e) => { e.stopPropagation(); onMutate.addRoot(p.id); }}>
+                              <Icon name="plus" size={11}/>
+                            </button>
+                            <button className="project-section-btn"
+                              title="Rename project"
+                              onClick={(e) => { e.stopPropagation(); handleRenameProject(p.id); }}>
+                              <Icon name="edit" size={11}/>
+                            </button>
+                            <button className="project-section-btn project-section-btn-danger"
+                              title="Remove project from registry"
+                              onClick={(e) => { e.stopPropagation(); handleRemoveProject(p.id); }}>
+                              <Icon name="trash" size={11}/>
+                            </button>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div
+                            className="project-section-content"
+                            onDragOver={sectionDragOver}
+                            onDragLeave={sectionDragLeave}
+                            onDrop={(e) => handleSectionDrop(e, p.id)}
+                          >
+                            {unhealthy ? (
+                              <div className="project-empty">
+                                {p.missing
+                                  ? <>File not found on disk — restore it, or remove this project. <span className="mono">{p.path}</span></>
+                                  : <>Failed to load this project: {p.error}</>}
+                              </div>
+                            ) : projEntries.length === 0 ? (
+                              <div className="project-empty">{hasFilters ? 'No items match these filters.' : 'No items in this project yet.'}</div>
+                            ) : (
+                              <BacklogTree
+                                items={projEntries}
+                                expandedMap={expandedMap}
+                                setExpanded={setExpanded}
+                                onMutate={onMutate}
+                                query={filters.text?.trim() || ''}
+                                statusStyle={tweaks.status_style}
+                                manualOrder={tweaks.sort_mode === 'manual'}
+                              />
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : filtered.length === 0 ? (
                 <div className="empty-state">
                   <div className="empty-glyph">∅</div>
                   <div>{hasFilters ? 'No items match these filters.' : 'No items yet. Press n or click "+ New item" to start.'}</div>
@@ -1202,6 +1398,9 @@ function App() {
         mode={itemDialog?.mode}
         initial={itemDialog?.initial}
         recentTags={recentTags}
+        isMultiProject={isMulti && storageMode === 'api'}
+        projects={projects}
+        defaultProjectId={itemDialog?.projectId ?? projects[0]?.id}
         onClose={() => setItemDialog(null)}
         onSubmit={submitItemDialog}
       />
@@ -1211,11 +1410,24 @@ function App() {
         title={confirm?.title}
         message={confirm?.message}
         detail={confirm?.detail}
+        checkbox={confirm?.checkbox}
         confirmLabel={confirm?.confirmLabel}
         danger={confirm?.danger}
         onCancel={() => setConfirm(null)}
         onConfirm={confirm?.onConfirm}
       />
+
+      {prompt && (
+        <window.PromptDialog
+          open
+          title={prompt.title}
+          message={prompt.message}
+          placeholder={prompt.placeholder}
+          confirmLabel={prompt.confirmLabel}
+          onCancel={() => setPrompt(null)}
+          onConfirm={(value) => { const cb = prompt.onConfirm; setPrompt(null); cb?.(value); }}
+        />
+      )}
 
       <ImportExportDialog
         open={importExportOpen}
