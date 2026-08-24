@@ -115,6 +115,31 @@ function retagSubtree(node, projectId) {
   walkTree([node], it => { it._projectId = projectId; });
 }
 
+// Disk counterpart of the in-memory de-collision in buildMergedDataFromProjects:
+// strip the merge-only `~<projectId>` suffix from entry ids, history itemIds and
+// restore-path segments of THIS project's subset before serializing, so every
+// project file stays a standard upstream backlog.md (upstream ids never contain
+// `~`). Only an exact `~<projectId>` ending is stripped — other projects'
+// suffixes or natural `~` pass through untouched. PURE: the in-memory tree keeps
+// its suffixed ids for de-collision; deep-safe copies are returned.
+function toDiskIds(entries, history, projectId) {
+  if (!projectId) return { entries, history };
+  const suffix = '~' + projectId;
+  const strip = id => (typeof id === 'string' && id.endsWith(suffix)) ? id.slice(0, id.length - suffix.length) : id;
+  const mapEntry = it => ({
+    ...it,
+    id: strip(it.id),
+    restorePath: typeof it.restorePath === 'string' && it.restorePath
+      ? it.restorePath.split('/').map(strip).join('/')
+      : it.restorePath,
+    children: it.children ? it.children.map(mapEntry) : it.children,
+  });
+  return {
+    entries: entries.map(mapEntry),
+    history: history.map(h => ({ ...h, itemId: strip(h.itemId) })),
+  };
+}
+
 function App() {
   const [data, setData]             = useStateMain(buildEmptyData);
   const [storageMode, setStorageMode] = useStateMain('local'); // 'api' | 'direct' | 'local'
@@ -391,7 +416,7 @@ function App() {
           for (const pId of dirtyIds) {
             const projectEntries = d.entries.filter(e => (e._projectId ?? fallbackFirst) === pId);
             const projectHistory = d.history.filter(h => (h._projectId ?? fallbackFirst) === pId);
-            const content = await Parser.serialize({ entries: projectEntries, history: projectHistory });
+            const content = await Parser.serialize(toDiskIds(projectEntries, projectHistory, pId));
             const result  = await ApiBackend.saveProject(pId, content);
             // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
             if (result?.checksum) SyncPoller.lastChecksums[pId] = result.checksum;
@@ -863,14 +888,16 @@ function App() {
           return { pid, entries: [], history: [] };
         }));
         for (const { pid, entries: archEntries, history: archHistory } of existing) {
-          const backlogContent = await Parser.serialize({
-            entries: newEntries.filter(e => pidOf(e) === pid),
-            history: newHistory.filter(h => pidOf(h) === pid),
-          });
-          const archiveContent = await Parser.serialize({
-            entries: [...archEntries, ...groups.get(pid)],
-            history: archHistory,
-          });
+          const backlogContent = await Parser.serialize(toDiskIds(
+            newEntries.filter(e => pidOf(e) === pid),
+            newHistory.filter(h => pidOf(h) === pid),
+            pid,
+          ));
+          const archiveContent = await Parser.serialize(toDiskIds(
+            [...archEntries, ...groups.get(pid)],
+            archHistory,
+            pid,
+          ));
           const result = await ApiBackend.saveArchive(backlogContent, archiveContent, pid);
           if (!result.ok) throw new Error('Archive failed');
         }
@@ -950,14 +977,16 @@ function App() {
         const fallbackFirst = latestProjects.current[0]?.id ?? null;
         const pidOf = x => x._projectId ?? fallbackFirst;
         for (const pid of [...new Set(toRestore.map(pidOf))]) {
-          const backlogContent = await Parser.serialize({
-            entries: newEntries.filter(e => pidOf(e) === pid),
-            history: newHistory.filter(h => pidOf(h) === pid),
-          });
-          const archiveContent = await Parser.serialize({
-            entries: remainingArchive.filter(e => pidOf(e) === pid),
-            history: [],
-          });
+          const backlogContent = await Parser.serialize(toDiskIds(
+            newEntries.filter(e => pidOf(e) === pid),
+            newHistory.filter(h => pidOf(h) === pid),
+            pid,
+          ));
+          const archiveContent = await Parser.serialize(toDiskIds(
+            remainingArchive.filter(e => pidOf(e) === pid),
+            [],
+            pid,
+          ));
           const result = await ApiBackend.restoreFromArchive(backlogContent, archiveContent, pid);
           if (!result.ok) throw new Error('Restore failed');
         }
@@ -1507,6 +1536,7 @@ Object.assign(window, {
   buildMergedDataFromProjects,
   computeDirtyProjectIds,
   retagSubtree,
+  toDiskIds,
 });
 
 window.App = App;
