@@ -26,11 +26,26 @@ class Config:
         self.archive = self.dir / "archive.md"
         self.backups_dir = self.dir / "backups"
         self.stats_file = self.dir / "stats.jsonl"
+        self.registry_file = self.dir / "projects.json"
         self.web_dir = web_dir.resolve() if web_dir else Path(__file__).parent.parent / "webapp"
 
     def ensure_dirs(self):
         self.dir.mkdir(parents=True, exist_ok=True)
         self.backups_dir.mkdir(exist_ok=True)
+
+    def load_registry(self) -> dict:
+        if not self.registry_file.exists():
+            return {}
+        try:
+            return json.loads(self.registry_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            print(f"[registry] projects.json unreadable, starting empty: {e}")
+            return {}
+
+    def save_registry(self, registry: dict):
+        tmp = self.registry_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.registry_file)
 
 
 CONFIG: Config = None  # type: ignore[assignment]
@@ -218,6 +233,34 @@ def read_stats(from_iso: str = None, to_iso: str = None) -> list:
             except json.JSONDecodeError:
                 continue
     return events
+
+
+# ---------------------------------------------------------------------------
+# Project registry
+# ---------------------------------------------------------------------------
+
+def safe_project_name(name: str) -> str:
+    """Collapse to [a-zA-Z0-9_-]; empty result means the name is invalid."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "-", name.strip())
+
+
+def get_project_path(name: str) -> Path:
+    registry = CONFIG.load_registry()
+    if name not in registry:
+        raise KeyError(name)
+    return Path(registry[name]["path"]).resolve()
+
+
+def auto_register_default():
+    registry = CONFIG.load_registry()
+    if registry:
+        return
+    if not CONFIG.master.exists():
+        return
+    path = str(CONFIG.master.resolve())
+    registry["default"] = {"path": path, "name": "default"}
+    CONFIG.save_registry(registry)
+    print(f"[init] Registered default project: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +493,15 @@ class Handler(BaseHTTPRequestHandler):
 # Main
 # ---------------------------------------------------------------------------
 
+def initialize_storage():
+    CONFIG.ensure_dirs()
+    if not CONFIG.master.exists():
+        blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
+        CONFIG.master.write_text(blank, encoding="utf-8")
+        print(f"[init] Created blank {CONFIG.master}")
+    auto_register_default()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Personal Backlog Server")
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
@@ -461,12 +513,7 @@ def main():
     global CONFIG
     web_dir = Path(args.web_dir) if args.web_dir else None
     CONFIG = Config(Path(args.dir), args.port, web_dir)
-    CONFIG.ensure_dirs()
-
-    if not CONFIG.master.exists():
-        blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
-        CONFIG.master.write_text(blank, encoding="utf-8")
-        print(f"[init] Created blank {CONFIG.master}")
+    initialize_storage()
 
     server = HTTPServer(("0.0.0.0", args.port), Handler)
     print(f"[server] Listening on http://0.0.0.0:{args.port}")
