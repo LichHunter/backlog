@@ -263,14 +263,16 @@ const ApiBackend = {
     } catch { return {}; }
   },
 
-  async loadArchive() {
-    const r = await fetch('/api/archive');
+  async loadArchive(project = null) {
+    const url = project ? `/api/projects/${encodeURIComponent(project)}/archive` : '/api/archive';
+    const r = await fetch(url);
     if (!r.ok) throw new Error('API archive load failed: ' + r.status);
     return r.json(); // { content, checksum, exists }
   },
 
-  async saveArchive(backlogContent, archiveContent) {
-    const r = await fetch('/api/archive', {
+  async saveArchive(backlogContent, archiveContent, project = null) {
+    const url = project ? `/api/projects/${encodeURIComponent(project)}/archive` : '/api/archive';
+    const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ backlog: backlogContent, archive: archiveContent }),
@@ -279,14 +281,96 @@ const ApiBackend = {
     return r.json();
   },
 
-  async restoreFromArchive(backlogContent, archiveContent) {
-    const r = await fetch('/api/archive/restore', {
+  async restoreFromArchive(backlogContent, archiveContent, project = null) {
+    const url = project ? `/api/projects/${encodeURIComponent(project)}/archive/restore` : '/api/archive/restore';
+    const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ backlog: backlogContent, archive: archiveContent }),
     });
     if (!r.ok) throw new Error('API archive restore failed: ' + r.status);
     return r.json();
+  },
+
+  // ---- Project-scoped methods (multi-project server API) ----
+
+  async listProjects() {
+    const r = await fetch('/api/projects');
+    if (!r.ok) throw new Error('API projects failed: ' + r.status);
+    return (await r.json()).projects || [];
+  },
+
+  async registerProject(path, name = null) {
+    const r = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, name }),
+    });
+    return r.json(); // { ok, name, path }
+  },
+
+  async unregisterProject(name, deleteFile = false) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}${deleteFile ? '?delete_file=true' : ''}`, {
+      method: 'DELETE',
+    });
+    return r.json(); // { ok, name, deleted, warning? }
+  },
+
+  async renameProject(name, newName) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newName }),
+    });
+    return r.json(); // { ok, name }
+  },
+
+  async loadProject(name) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}/backlog`);
+    if (!r.ok) throw new Error('API project load failed: ' + r.status);
+    return r.json(); // { content, checksum }
+  },
+
+  async saveProject(name, content) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}/backlog`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!r.ok) throw new Error('API project save failed: ' + r.status);
+    return r.json(); // { ok, checksum, saved }
+  },
+
+  async loadProjectBackups(name) {
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(name)}/backups`);
+      if (!r.ok) return [];
+      return (await r.json()).backups || [];
+    } catch { return []; }
+  },
+
+  async loadAllProjects() {
+    const list = await this.listProjects();
+    return Promise.all(list.map(async p => {
+      if (p.missing) {
+        return { id: p.name, name: p.name, path: p.path, entries: [], history: [], meta: null, checksumOk: true, missing: true };
+      }
+      try {
+        const raw    = await this.loadProject(p.name);
+        const parsed = await Parser.parse(raw.content);
+        return {
+          id: p.name,
+          name: p.name,
+          path: p.path,
+          entries: parsed.entries,
+          history: parsed.history,
+          meta: parsed.meta,
+          checksumOk: parsed.checksumOk,
+        };
+      } catch (e) {
+        return { id: p.name, name: p.name, path: p.path, entries: [], history: [], meta: null, checksumOk: false, error: String(e.message || e) };
+      }
+    }));
   },
 };
 
