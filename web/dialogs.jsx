@@ -247,7 +247,7 @@ function DialogHeader({ eyebrow, title, onClose, id }) {
 }
 
 // --- Item editor (used for both edit and add) ---
-function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] }) {
+function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [], isMultiProject = false, projects = [], defaultProjectId = null }) {
   const [title, setTitle] = useStateD("");
   const [body, setBody] = useStateD(null);
   const [priority, setPriority] = useStateD("P2");
@@ -257,7 +257,14 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
   const [tagInput, setTagInput] = useStateD("");
   const [reason, setReason] = useStateD("");
   const [progress, setProgress] = useStateD(0);
+  const [createAsProject, setCreateAsProject] = useStateD(false);
+  const [projectPath, setProjectPath] = useStateD("");
+  const [selectedProjectId, setSelectedProjectId] = useStateD(null);
   const titleRef = useRefD(null);
+
+  const showProjectOption = isMultiProject && mode === "add";
+  const showPathInput = showProjectOption && createAsProject;
+  const showProjectSelect = showProjectOption && !createAsProject && projects.length > 0;
 
   useEffectD(() => {
     if (!open) return;
@@ -270,6 +277,13 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
     setTagInput("");
     setReason(initial?.reason || "");
     setProgress(initial?.progress ?? 0);
+    setCreateAsProject(false);
+    setProjectPath("");
+    setSelectedProjectId(
+      defaultProjectId && projects.some(p => p.id === defaultProjectId)
+        ? defaultProjectId
+        : (projects[0] ? projects[0].id : null)
+    );
     setTimeout(() => titleRef.current?.focus(), 50);
   }, [open, initial]);
 
@@ -283,11 +297,12 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
 
   const submit = (e) => {
     e?.preventDefault();
-    if (!title.trim()) return;
+    // Item type requires a title; Project type only requires a path (title is an optional display name).
+    if (showPathInput ? !projectPath.trim() : !title.trim()) return;
     // Reconcile progress with status before submitting.
     let outProgress = snapProgress(progress);
     if (status === "done") outProgress = 100;
-    onSubmit({
+    const payload = {
       title: title.trim(),
       body: body || null,
       priority, status,
@@ -295,14 +310,25 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
       tags,
       reason: status === "blocked" ? reason.trim() || null : null,
       progress: outProgress
-    });
+    };
+    if (isMultiProject) {
+      const rawPath = projectPath.trim();
+      payload.createAsProject = showPathInput;
+      payload.projectPath = showPathInput
+        ? (rawPath.endsWith('.md') ? rawPath : rawPath.replace(/\/$/, '') + '/backlog.md')
+        : null;
+      payload.projectId = showProjectSelect ? selectedProjectId : null;
+    }
+    onSubmit(payload);
   };
 
   const tagSuggestions = recentTags.filter(t => !tags.includes(t)).slice(0, 8);
 
   return (
     <Dialog open={open} onClose={onClose} width={520} labelledBy="dlg-item-title">
-      <form onSubmit={submit}>
+      <form onSubmit={submit} onKeyDown={(e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit(); }
+      }}>
         <DialogHeader
           id="dlg-item-title"
           eyebrow={mode === "view" ? "Archived item" : mode === "edit" ? "Edit item" : (mode === "add-child" ? "Add sub-item" : "New item")}
@@ -318,8 +344,8 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               className="text-input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="What needs to happen?"
-              required
+              placeholder={showPathInput ? "Optional display name" : "What needs to happen?"}
+              required={!showPathInput}
               readOnly={mode === "view"}
             />
           </div>
@@ -432,6 +458,56 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               />
             )}
           </div>
+
+          {showProjectOption && (
+            <div className="field">
+              <label className="field-label">Type</label>
+              <div className="status-grid" style={{gridTemplateColumns: '1fr 1fr'}}>
+                <button type="button"
+                  className={`status-card ${!createAsProject ? 'active' : ''}`}
+                  onClick={() => setCreateAsProject(false)}>
+                  <span className="status-card-icon" style={{background: 'var(--bg-2)'}}>
+                    <Icon name="check" size={16}/>
+                  </span>
+                  <span className="status-card-label">Item</span>
+                </button>
+                <button type="button"
+                  className={`status-card ${createAsProject ? 'active' : ''}`}
+                  onClick={() => setCreateAsProject(true)}>
+                  <span className="status-card-icon" style={{background: 'var(--bg-2)'}}>
+                    <Icon name="folder" size={16}/>
+                  </span>
+                  <span className="status-card-label">Project</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {showProjectSelect && (
+            <div className="field">
+              <label className="field-label">Project <span className="field-hint">where this item will live</span></label>
+              <select
+                className="text-input"
+                value={selectedProjectId ?? ""}
+                onChange={(e) => setSelectedProjectId(e.target.value)}>
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {showPathInput && (
+            <div className="field">
+              <label className="field-label">File path <span className="field-hint">created if missing; backlog.md appended for directories</span></label>
+              <input
+                className="text-input"
+                value={projectPath}
+                onChange={(e) => setProjectPath(e.target.value)}
+                placeholder="/home/user/project/backlog.md"
+              />
+            </div>
+          )}
         </div>
 
         <div className="dlg-foot">
@@ -447,8 +523,8 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
               <span className="dlg-hint">⌘↩ to save · Esc to cancel</span>
               <div className="dlg-foot-actions">
                 <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
-                <button type="submit" className="btn-primary" disabled={!title.trim()}>
-                  {mode === "edit" ? "Save changes" : "Create item"}
+                <button type="submit" className="btn-primary" disabled={showPathInput ? !projectPath.trim() : !title.trim()}>
+                  {mode === "edit" ? "Save changes" : (showPathInput ? "Register project" : "Create item")}
                 </button>
               </div>
             </>
@@ -460,13 +536,25 @@ function ItemDialog({ open, mode, initial, onClose, onSubmit, recentTags = [] })
 }
 
 // --- Confirm dialog ---
-function ConfirmDialog({ open, title, message, detail, confirmLabel = "Confirm", danger = false, onCancel, onConfirm }) {
+function ConfirmDialog({ open, title, message, detail, checkbox, confirmLabel = "Confirm", danger = false, onCancel, onConfirm }) {
+  const [checked, setChecked] = useStateD(false);
+
+  useEffectD(() => {
+    if (open) setChecked(false);
+  }, [open]);
+
   return (
     <Dialog open={open} onClose={onCancel} width={420} labelledBy="dlg-confirm-title">
       <DialogHeader id="dlg-confirm-title" eyebrow="Confirm" title={title} onClose={onCancel}/>
       <div className="dlg-body">
         <p className="dlg-msg">{message}</p>
         {detail && <div className="dlg-detail">{detail}</div>}
+        {checkbox && (
+          <label className="dlg-checkbox">
+            <input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)}/>
+            <span>{checkbox}</span>
+          </label>
+        )}
       </div>
       <div className="dlg-foot">
         <span/>
@@ -474,9 +562,54 @@ function ConfirmDialog({ open, title, message, detail, confirmLabel = "Confirm",
           <button type="button" className="btn-secondary" onClick={onCancel}>Cancel</button>
           <button type="button"
             className={danger ? "btn-danger" : "btn-primary"}
-            onClick={onConfirm} autoFocus>{confirmLabel}</button>
+            onClick={() => onConfirm(checked)} autoFocus>{confirmLabel}</button>
         </div>
       </div>
+    </Dialog>
+  );
+}
+
+// --- Prompt dialog (styled input) ---
+function PromptDialog({ open, title, message, placeholder = "", confirmLabel = "OK", onCancel, onConfirm }) {
+  const [value, setValue] = useStateD("");
+  const inputRef = useRefD(null);
+
+  useEffectD(() => {
+    if (open) {
+      setValue("");
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [open]);
+
+  const submit = (e) => {
+    e?.preventDefault();
+    if (!value.trim()) return;
+    onConfirm(value.trim());
+  };
+
+  return (
+    <Dialog open={open} onClose={onCancel} width={480} labelledBy="dlg-prompt-title">
+      <form onSubmit={submit}>
+        <DialogHeader id="dlg-prompt-title" eyebrow="Input" title={title} onClose={onCancel}/>
+        <div className="dlg-body">
+          <p className="dlg-msg">{message}</p>
+          <input
+            ref={inputRef}
+            className="text-input"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholder}
+            style={{marginTop: 12}}
+          />
+        </div>
+        <div className="dlg-foot">
+          <span/>
+          <div className="dlg-foot-actions">
+            <button type="button" className="btn-secondary" onClick={onCancel}>Cancel</button>
+            <button type="submit" className="btn-primary" disabled={!value.trim()}>{confirmLabel}</button>
+          </div>
+        </div>
+      </form>
     </Dialog>
   );
 }
@@ -616,4 +749,5 @@ function TagMatchHL({ text, match }) {
 window.Dialog = Dialog;
 window.ItemDialog = ItemDialog;
 window.ConfirmDialog = ConfirmDialog;
+window.PromptDialog = PromptDialog;
 window.RichTextEditor = RichTextEditor;
