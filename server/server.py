@@ -343,6 +343,29 @@ def auto_register_default():
     print(f"[init] Registered default project: {path}")
 
 
+def register_project(raw_path: str, raw_name: str | None = None) -> tuple:
+    """Register a project for raw_path. Returns (payload, status).
+
+    Paths without an .md suffix get backlog.md appended; a missing file is
+    created from the blank template; the name defaults to the parent dir name.
+    """
+    path = Path(raw_path).expanduser().resolve()
+    if not path.name.endswith(".md"):
+        path = path / "backlog.md"
+    name = safe_project_name(raw_name or path.parent.name)
+    if not name:
+        return {"ok": False, "error": "Invalid project name"}, 400
+    registry = CONFIG.load_registry()
+    if name in registry:
+        return {"ok": False, "error": f"Project '{name}' already registered"}, 409
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(build_markdown("", BLANK_HISTORY), encoding="utf-8")
+    registry[name] = {"path": str(path), "name": name}
+    CONFIG.save_registry(registry)
+    return {"ok": True, "name": name, "path": str(path)}, 200
+
+
 # ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
@@ -358,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
@@ -418,7 +441,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -554,6 +577,22 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/api/projects":
+            body = self._read_json_body_or_400()
+            if body is None:
+                return
+            raw_path = body.get("path")
+            if not isinstance(raw_path, str) or not raw_path:
+                self._json_response({"ok": False, "error": "Missing 'path'"}, 400)
+                return
+            raw_name = body.get("name")
+            if raw_name is not None and not isinstance(raw_name, str):
+                self._json_response({"ok": False, "error": "Invalid project name"}, 400)
+                return
+            payload, status = register_project(raw_path, raw_name)
+            self._json_response(payload, status)
+            return
+
         if path.startswith("/api/projects/"):
             name, action = self._project_route_parts(path)
             body = self._read_json_body_or_400()
@@ -561,6 +600,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             paths = self._resolve_project_or_404(name)
             if paths is None:
+                return
+            if action == "rename":
+                new_name = safe_project_name(body.get("newName", ""))
+                if not new_name:
+                    self._json_response({"ok": False, "error": "Invalid project name"}, 400)
+                    return
+                registry = CONFIG.load_registry()
+                if new_name in registry:
+                    self._json_response(
+                        {"ok": False, "error": f"Project '{new_name}' already registered"}, 409)
+                    return
+                entry = registry.pop(name)
+                registry[new_name] = {"path": entry["path"], "name": new_name}
+                CONFIG.save_registry(registry)
+                self._json_response({"ok": True, "name": new_name})
                 return
             if action == "backlog":
                 result = write_master_at(body.get("content", ""), paths)
@@ -667,6 +721,38 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             append_stats(body)
             self._json_response({"ok": True})
+            return
+
+        self._json_response({"error": "Not found"}, 404)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+
+        if path.startswith("/api/projects/"):
+            name, action = self._project_route_parts(path)
+            if action:
+                self._json_response({"error": "Not found"}, 404)
+                return
+            registry = CONFIG.load_registry()
+            if name not in registry:
+                self._json_response({"error": "Project not found"}, 404)
+                return
+            if len(registry) == 1:
+                self._json_response({"error": "At least one project must remain registered"}, 400)
+                return
+            master = Path(registry[name]["path"]).resolve()
+            del registry[name]
+            CONFIG.save_registry(registry)
+            result = {"ok": True, "name": name, "deleted": False}
+            if qs.get("delete_file", [""])[0] == "true" and master.exists():
+                try:
+                    master.unlink()
+                    result["deleted"] = True
+                except OSError as e:
+                    result["warning"] = f"Could not delete file: {e}"
+            self._json_response(result)
             return
 
         self._json_response({"error": "Not found"}, 404)

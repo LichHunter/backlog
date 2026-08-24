@@ -13,6 +13,7 @@ Two layers:
 import http.client
 import io
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -418,6 +419,255 @@ class TestProjectNamespace(unittest.TestCase):
         status, data = self.request_json("GET", "/api/projects/alpha/backlog")
         self.assertEqual(status, 200)
         self.assertEqual(data["content"], make_content("late-registered"))
+
+
+class TestProjectManagement(unittest.TestCase):
+    """Todo 3: register / unregister / rename endpoints (failing-first)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._orig_config = ss.CONFIG
+        ss.CONFIG = ss.Config(Path(self.tmp.name), 0)
+        ss.initialize_storage()
+        self.httpd = HTTPServer(("127.0.0.1", 0), ss.Handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(setattr, ss, "CONFIG", self._orig_config)
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+
+    def request(self, method: str, path: str, json_body=None, raw_body=None):
+        if raw_body is not None:
+            payload = raw_body.encode("utf-8")
+        elif json_body is not None:
+            payload = json.dumps(json_body).encode("utf-8")
+        else:
+            payload = None
+        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request(method, path, body=payload, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        return resp.status, data.decode("utf-8")
+
+    def request_json(self, method: str, path: str, json_body=None, raw_body=None):
+        status, text = self.request(method, path, json_body=json_body, raw_body=raw_body)
+        return status, json.loads(text)
+
+    def registry_on_disk(self) -> dict:
+        with open(ss.CONFIG.registry_file, encoding="utf-8") as f:
+            return json.load(f)
+
+    def project_names(self) -> list:
+        _, data = self.request_json("GET", "/api/projects")
+        return [p["name"] for p in data["projects"]]
+
+    def register_via_api(self, path, name=None):
+        body = {"path": str(path)} if name is None else {"path": str(path), "name": name}
+        return self.request_json("POST", "/api/projects", json_body=body)
+
+    # (a) register a directory path → backlog.md appended, blank file created, listed
+    def test_register_creates_blank_backlog_and_lists(self):
+        proj_dir = Path(self.tmp.name) / "proj"
+        expected_file = proj_dir / "backlog.md"
+        status, resp = self.register_via_api(proj_dir)
+        self.assertEqual(status, 200)
+        self.assertEqual(resp, {"ok": True, "name": "proj", "path": str(expected_file)})
+
+        # File created on disk with the blank template (mirrors startup creation)
+        self.assertTrue(expected_file.is_file())
+        content = expected_file.read_text(encoding="utf-8")
+        self.assertIn("# Backlog", content)
+        self.assertIn("<!-- SECTION: ENTRIES -->", content)
+        self.assertIn("<!-- SECTION: HISTORY -->", content)
+        self.assertIn(ss.BLANK_HISTORY, content)
+        self.assertTrue(content.rstrip().endswith("-->"))  # integrity marker present
+
+        # Listed by GET /api/projects and present in the on-disk registry
+        self.assertIn("proj", self.project_names())
+        self.assertEqual(self.registry_on_disk()["proj"],
+                         {"path": str(expected_file), "name": "proj"})
+
+    # (b) registering the same derived name again → 409, registry unchanged
+    def test_register_duplicate_name_409(self):
+        proj_dir = Path(self.tmp.name) / "proj"
+        status, _ = self.register_via_api(proj_dir)
+        self.assertEqual(status, 200)
+        before = self.registry_on_disk()
+
+        status, resp = self.register_via_api(proj_dir)
+        self.assertEqual(status, 409)
+        self.assertEqual(resp, {"ok": False,
+                                "error": "Project 'proj' already registered"})
+        self.assertEqual(self.registry_on_disk(), before)
+
+    # (c) unsafe display name is mangled by safe_project_name
+    def test_register_mangles_unsafe_name(self):
+        proj_dir = Path(self.tmp.name) / "p2"
+        status, resp = self.register_via_api(proj_dir, name="My Proj!")
+        self.assertEqual(status, 200)
+        self.assertEqual(resp["name"], "My-Proj-")
+
+        # Empty-string name falls back to the directory name
+        status, resp = self.register_via_api(Path(self.tmp.name) / "myproj", name="")
+        self.assertEqual(status, 200)
+        self.assertEqual(resp["name"], "myproj")
+
+    # (d) rename: old key gone, content reachable under the new key.
+    # Documented choice: the re-keyed entry is appended at the END of the
+    # registry (insertion position is not preserved) — pinned by the order assert.
+    def test_rename_moves_key_and_keeps_content(self):
+        proj_dir = Path(self.tmp.name) / "proj"
+        status, _ = self.register_via_api(proj_dir)
+        self.assertEqual(status, 200)
+        content = make_content("renamed-project")
+        status, _ = self.request_json("POST", "/api/projects/proj/backlog",
+                                      json_body={"content": content})
+        self.assertEqual(status, 200)
+
+        status, resp = self.request_json("POST", "/api/projects/proj/rename",
+                                         json_body={"newName": "beta"})
+        self.assertEqual(status, 200)
+        self.assertEqual(resp, {"ok": True, "name": "beta"})
+
+        self.assertEqual(self.project_names(), ["default", "beta"])  # append-at-end
+        self.assertNotIn("proj", self.registry_on_disk())
+        status, data = self.request_json("GET", "/api/projects/beta/backlog")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["content"], content)
+        # path preserved through the rename
+        self.assertEqual(self.registry_on_disk()["beta"]["path"], str(proj_dir / "backlog.md"))
+        status, _ = self.request("GET", "/api/projects/proj/backlog")
+        self.assertEqual(status, 404)
+
+    # (e1) DELETE without flag → registry entry gone, file (and neighbors) untouched
+    def test_delete_without_flag_keeps_file(self):
+        proj_dir = Path(self.tmp.name) / "proj"
+        status, _ = self.register_via_api(proj_dir)
+        self.assertEqual(status, 200)
+        master = proj_dir / "backlog.md"
+        backups_dir = proj_dir / "backups"
+        backups_dir.mkdir()
+        (backups_dir / "backlog_manual.md").write_text("keep", encoding="utf-8")
+        (proj_dir / "archive.md").write_text("archive-keep", encoding="utf-8")
+
+        status, resp = self.request_json("DELETE", "/api/projects/proj")
+        self.assertEqual(status, 200)
+        self.assertTrue(resp["ok"])
+        self.assertFalse(resp["deleted"])
+
+        self.assertNotIn("proj", self.registry_on_disk())
+        self.assertEqual(self.project_names(), ["default"])
+        self.assertTrue(master.is_file())  # file still on disk
+        self.assertTrue((backups_dir / "backlog_manual.md").is_file())
+        self.assertTrue((proj_dir / "archive.md").is_file())
+
+    # (e2) DELETE with delete_file=true → the single .md gone; backups/ and archive survive
+    def test_delete_with_flag_removes_only_the_md_file(self):
+        proj_dir = Path(self.tmp.name) / "proj"
+        status, _ = self.register_via_api(proj_dir)
+        self.assertEqual(status, 200)
+        master = proj_dir / "backlog.md"
+        backups_dir = proj_dir / "backups"
+        backups_dir.mkdir()
+        (backups_dir / "backlog_manual.md").write_text("keep", encoding="utf-8")
+        (proj_dir / "archive.md").write_text("archive-keep", encoding="utf-8")
+
+        status, resp = self.request_json("DELETE", "/api/projects/proj?delete_file=true")
+        self.assertEqual(status, 200)
+        self.assertTrue(resp["ok"])
+        self.assertTrue(resp["deleted"])
+
+        self.assertFalse(master.exists())          # only the .md removed
+        self.assertTrue(backups_dir.is_dir())      # backups dir untouched
+        self.assertTrue((backups_dir / "backlog_manual.md").is_file())
+        self.assertTrue((proj_dir / "archive.md").is_file())
+        self.assertNotIn("proj", self.registry_on_disk())
+
+    # (f) DELETE on the last remaining project → 400, registry unchanged
+    def test_delete_last_project_400(self):
+        status, resp = self.request_json("DELETE", "/api/projects/default")
+        self.assertEqual(status, 400)
+        self.assertEqual(resp, {"error": "At least one project must remain registered"})
+        self.assertIn("default", self.registry_on_disk())
+        self.assertEqual(self.project_names(), ["default"])
+
+    # (g) rename conflicts and unknowns
+    def test_rename_to_existing_name_409(self):
+        for name in ("alpha", "beta"):
+            status, _ = self.register_via_api(Path(self.tmp.name) / name)
+            self.assertEqual(status, 200)
+        status, resp = self.request_json("POST", "/api/projects/alpha/rename",
+                                         json_body={"newName": "beta"})
+        self.assertEqual(status, 409)
+        self.assertEqual(resp, {"ok": False, "error": "Project 'beta' already registered"})
+        self.assertIn("alpha", self.registry_on_disk())  # unchanged
+
+    def test_rename_unknown_source_404(self):
+        status, resp = self.request_json("POST", "/api/projects/nope/rename",
+                                         json_body={"newName": "beta"})
+        self.assertEqual(status, 404)
+        self.assertIn("error", resp)
+
+    def test_rename_empty_new_name_400(self):
+        status, _ = self.register_via_api(Path(self.tmp.name) / "proj")
+        self.assertEqual(status, 200)
+        status, resp = self.request_json("POST", "/api/projects/proj/rename",
+                                         json_body={"newName": "   "})
+        self.assertEqual(status, 400)
+        self.assertEqual(resp, {"ok": False, "error": "Invalid project name"})
+        status, resp = self.request_json("POST", "/api/projects/proj/rename", json_body={})
+        self.assertEqual(status, 400)
+        self.assertIn("proj", self.registry_on_disk())  # unchanged
+
+    # (g) a name that safe-mangles to empty → 400 (whitespace is truthy, no fallback)
+    def test_register_whitespace_name_400(self):
+        status, resp = self.register_via_api(Path(self.tmp.name) / "proj", name="   ")
+        self.assertEqual(status, 400)
+        self.assertEqual(resp, {"ok": False, "error": "Invalid project name"})
+        self.assertEqual(self.project_names(), ["default"])
+
+    # (h) RELATIVE path resolves against the server process CWD — pinned as intended
+    def test_register_relative_path_resolves_against_cwd(self):
+        cwd_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cwd_tmp.cleanup)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(cwd_tmp.name)
+        status, resp = self.register_via_api("relproj")
+        self.assertEqual(status, 200)
+        expected = (Path(cwd_tmp.name) / "relproj" / "backlog.md").resolve()
+        self.assertEqual(resp["path"], str(expected))
+        self.assertTrue(expected.is_file())
+
+    # Adversarial: malformed / empty / path-less register bodies → 400, server stays up
+    def test_register_malformed_bodies_400(self):
+        status, resp = self.request_json("POST", "/api/projects",
+                                         raw_body='{"path": not-json')
+        self.assertEqual(status, 400)
+        self.assertIn("error", resp)
+
+        status, resp = self.request_json("POST", "/api/projects", json_body={})
+        self.assertEqual(status, 400)
+        self.assertIn("error", resp)
+
+        status, _ = self.request("POST", "/api/projects")  # empty body
+        self.assertEqual(status, 400)
+
+        status, _ = self.request("GET", "/api/backlog")  # server still alive
+        self.assertEqual(status, 200)
+
+    # Adversarial: DELETE on unknown project / unknown API path / action path → 404
+    def test_delete_unknown_targets_404(self):
+        status, resp = self.request_json("DELETE", "/api/projects/nope")
+        self.assertEqual(status, 404)
+        self.assertIn("error", resp)
+        status, _ = self.request("DELETE", "/api/nope")
+        self.assertEqual(status, 404)
+        status, _ = self.request("DELETE", "/api/projects/default/backlog")
+        self.assertEqual(status, 404)
 
 
 if __name__ == "__main__":
