@@ -767,17 +767,45 @@ const Storage = {
 const SyncPoller = {
   _timer:           null,
   lastChecksum:     '',
+  lastChecksums:    {}, // multi-project mode: { projectName: checksum }
   _onExternalChange: null,
   _isDirty:          null,
+  _multi:            false,
 
   start({ onExternalChange, isDirty }) {
     this._onExternalChange = onExternalChange;
     this._isDirty          = isDirty;
+    this._multi            = false;
     this._timer = setInterval(() => this._tick(), 5000);
+  },
+
+  // Multi-project mode (api only): poll GET /api/projects — ONE round trip for
+  // all checksums. A changed project is reloaded individually; a changed
+  // project SET (registered/renamed/unregistered externally) triggers a full
+  // reload via the 'set-changed' callback.
+  startMulti({ onExternalChange, isDirty }) {
+    this._onExternalChange = onExternalChange;
+    this._isDirty          = isDirty;
+    this._multi            = true;
+    this.lastChecksums     = {};
+    this.syncChecksums(); // baseline; a baseline never fires callbacks
+    this._timer = setInterval(() => this._tickMulti(), 5000);
   },
 
   stop() {
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    this._multi = false;
+  },
+
+  // Re-baseline checksums after our own writes that bypass saveProject (e.g.
+  // per-project archive saves), so the next poll does not mistake them for
+  // external changes.
+  async syncChecksums() {
+    if (!this._multi) return;
+    try {
+      const projects = await ApiBackend.listProjects();
+      for (const p of projects) this.lastChecksums[p.name] = p.checksum || '';
+    } catch { /* silent on poll errors */ }
   },
 
   async _tick() {
@@ -795,6 +823,47 @@ const SyncPoller = {
         this._onExternalChange?.('reload', parsed);
       }
     } catch { /* silent on poll errors */ }
+  },
+
+  async _tickMulti() {
+    if (!this._multi) return;
+    let projects;
+    try { projects = await ApiBackend.listProjects(); }
+    catch { return; }
+    if (!projects?.length) return;
+
+    const prev  = this.lastChecksums;
+    const known = Object.keys(prev);
+    const names = projects.map(p => p.name);
+    if (known.length > 0 && (names.length !== known.length || names.some(n => !known.includes(n)))) {
+      if (this._isDirty?.()) {
+        // Leave the baseline stale so the next tick retries after the
+        // pending save lands — reloading now would clobber unsaved edits.
+        this._onExternalChange?.('warn', null);
+      } else {
+        this.lastChecksums = Object.fromEntries(projects.map(p => [p.name, p.checksum || '']));
+        this._onExternalChange?.('set-changed', null);
+      }
+      return;
+    }
+    for (const p of projects) {
+      const cs = p.checksum || '';
+      if (!(p.name in prev)) { prev[p.name] = cs; continue; } // baseline a latecomer silently
+      if (!cs || cs === prev[p.name]) continue;
+      prev[p.name] = cs;
+      if (this._isDirty?.()) {
+        // Checksum already stored — the warn fires exactly once per change.
+        this._onExternalChange?.('warn', null);
+      } else {
+        try {
+          const raw    = await ApiBackend.loadProject(p.name);
+          const parsed = await Parser.parse(raw.content);
+          walkTree(parsed.entries, e => { e._projectId = p.name; });
+          for (const h of parsed.history) h._projectId = p.name;
+          this._onExternalChange?.('project-reloaded', { name: p.name, parsed });
+        } catch { /* unreadable project — retry on the next checksum change */ }
+      }
+    }
   },
 };
 

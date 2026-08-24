@@ -12,10 +12,10 @@ function loadLocalState() {
   } catch { return null; }
 }
 
-// Only UI state (expanded rows, tweaks) is persisted locally.
+// Only UI state (expanded rows, project section collapse, tweaks) is persisted locally.
 // Backlog data always lives in backlog.md — never in localStorage.
-function saveLocalState(expandedMap, tweaks) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify({ expandedMap, tweaks })); } catch { /* quota / private mode */ }
+function saveLocalState(expandedMap, tweaks, projectExpandedMap = {}) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ expandedMap, tweaks, projectExpandedMap })); } catch { /* quota / private mode */ }
 }
 
 // Empty starting state — used when there is no saved data and no seed data loaded.
@@ -42,6 +42,79 @@ function buildEmptyData() {
   };
 }
 
+// Build ONE merged data object from per-project loads (api mode). Every entry
+// and history row is tagged with _projectId; stats derive through the same
+// buildDataFromStorage pipeline as single-project mode. A single registered
+// project degenerates cleanly — the merged model is the ONLY api data path.
+async function buildMergedDataFromProjects(projectsData, { sizeInfo = {}, backups = [] } = {}) {
+  // Parser ids derive from a Date.now() counter, so loadAllProjects' parallel
+  // per-project parses can mint IDENTICAL ids (same-millisecond start).
+  // De-collide deterministically per project — stable across reloads — and
+  // remap that project's history rows to the new id.
+  const seenIds = new Set();
+  const allEntries   = [];
+  const taggedHistory = [];
+
+  for (const proj of projectsData) {
+    walkTree(proj.entries, it => {
+      if (seenIds.has(it.id)) {
+        const nid = `${it.id}~${proj.id}`;
+        for (const h of proj.history) if (h.itemId === it.id) h.itemId = nid;
+        it.id = nid;
+      }
+      seenIds.add(it.id);
+      it._projectId = proj.id;
+    });
+    allEntries.push(...proj.entries);
+    for (const h of proj.history) taggedHistory.push({ ...h, _projectId: proj.id });
+  }
+  taggedHistory.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+  const metas = projectsData.map(p => p.meta).filter(Boolean);
+  const mergedMeta = metas.length ? {
+    saved:        metas.map(m => m.saved).filter(Boolean).sort().pop() ?? null,
+    checksum:     '—',
+    entryCount:   countAll(allEntries),
+    historyCount: taggedHistory.length,
+  } : null;
+
+  const merged = await buildDataFromStorage(
+    { entries: allEntries, history: taggedHistory, meta: mergedMeta, checksumOk: projectsData.every(p => p.checksumOk) },
+    backups, 'api', sizeInfo,
+  );
+
+  // Stats above derive from the merged tree; mostActiveProject is the project
+  // with the most entries.
+  let mostActive = '—', maxCount = -1;
+  for (const proj of projectsData) {
+    const n = countAll(proj.entries);
+    if (n > maxCount) { maxCount = n; mostActive = proj.name; }
+  }
+  merged.stats.mostActiveProject = mostActive;
+  return merged;
+}
+
+// Which projects have local changes to persist? An explicit id wins (or an
+// array of ids for cross-project moves); otherwise derive from _projectId tags
+// on entries AND history rows, with untagged rows falling back to the first
+// registered project.
+function computeDirtyProjectIds(data, explicitProjectId, fallbackFirst) {
+  if (Array.isArray(explicitProjectId)) return explicitProjectId.filter(Boolean);
+  if (explicitProjectId) return [explicitProjectId];
+  const ids = new Set();
+  for (const e of data.entries) ids.add(e._projectId ?? fallbackFirst);
+  for (const h of data.history) ids.add(h._projectId ?? fallbackFirst);
+  ids.delete(null);
+  ids.delete(undefined);
+  return [...ids];
+}
+
+// Re-tag a node and all its descendants as belonging to `projectId`.
+// Used by cross-project drag&drop (todo 6 drop zones) and project rename.
+function retagSubtree(node, projectId) {
+  walkTree([node], it => { it._projectId = projectId; });
+}
+
 function App() {
   const [data, setData]             = useStateMain(buildEmptyData);
   const [storageMode, setStorageMode] = useStateMain('local'); // 'api' | 'direct' | 'local'
@@ -57,6 +130,8 @@ function App() {
   const [confirm, setConfirm]       = useStateMain(null);
   const [needsConnect, setNeedsConnect] = useStateMain(false);
   const [archiveData, setArchiveData] = useStateMain({ entries: [], history: [] });
+  const [projects, setProjects] = useStateMain([]);
+  const [projectExpandedMap, setProjectExpandedMap] = useStateMain(() => loadLocalState()?.projectExpandedMap ?? {});
 
   const TWEAK_DEFAULTS = { accent_hue: 35, density: 'comfortable', show_ids: false, paper_texture: true, status_style: 'color', sort_mode: 'priority', theme: 'system' };
   const [tweaks, setTweak] = useTweaks({ ...TWEAK_DEFAULTS, ...(loadLocalState()?.tweaks ?? {}) });
@@ -64,11 +139,15 @@ function App() {
   // Refs for async callbacks that need latest state without stale closures.
   const latestData        = useRefMain(data);
   const latestExpandedMap = useRefMain(expandedMap);
+  const latestProjects          = useRefMain(projects);
+  const latestProjectExpandedMap = useRefMain(projectExpandedMap);
   const isDirtyRef        = useRefMain(false);
   const saveTimerRef      = useRefMain(null);
 
   useEffectMain(() => { latestData.current = data; },         [data]);
   useEffectMain(() => { latestExpandedMap.current = expandedMap; }, [expandedMap]);
+  useEffectMain(() => { latestProjects.current = projects; },           [projects]);
+  useEffectMain(() => { latestProjectExpandedMap.current = projectExpandedMap; }, [projectExpandedMap]);
 
   useEffectMain(() => {
     document.documentElement.style.setProperty('--accent-hue', tweaks.accent_hue);
@@ -90,6 +169,57 @@ function App() {
     mq.addEventListener('change', apply);
     return () => mq.removeEventListener('change', apply);
   }, [tweaks.theme]);
+
+  // ---- Multi-project loading (api mode) ----
+  // Full reload of every registered project + merged data rebuild. Used by
+  // init, 'set-changed' polls, restores, and the admin flows (todos 6-8).
+  const reloadProjects = async ({ seedExpanded = false } = {}) => {
+    const [projs, sizeInfo, backups] = await Promise.all([
+      ApiBackend.loadAllProjects(),
+      Storage.getHealthInfo(),
+      Storage.listBackups(),
+    ]);
+    const newData = await buildMergedDataFromProjects(projs, { sizeInfo, backups });
+    latestProjects.current = projs;
+    setProjects(projs);
+    setData(newData);
+    if (seedExpanded && !loadLocalState()?.expandedMap) {
+      const em = {};
+      walkTree(newData.entries, it => { em[it.id] = !it.collapsed; });
+      setExpandedMap(em);
+    }
+    return { data: newData, projects: projs };
+  };
+
+  // SyncPoller callback for multi-project polling (api mode).
+  const handleExternalChangeMulti = async (kind, payload) => {
+    if (kind === 'warn') {
+      showToast('File changed externally — you have unsaved edits', 'warn');
+    } else if (kind === 'set-changed') {
+      try {
+        await reloadProjects({ seedExpanded: false });
+        showToast('Projects changed on server — reloaded');
+      } catch (e) {
+        console.error('Project set reload failed:', e); // keep current state; next poll retries
+      }
+    } else if (kind === 'project-reloaded' && payload) {
+      const { name, parsed } = payload;
+      const cur = latestProjects.current;
+      const idx = cur.findIndex(p => p.id === name);
+      if (idx === -1) return; // unknown project — a set-changed poll will pick it up
+      const newProjs = cur.map(p => p.id === name
+        ? { ...p, entries: parsed.entries, history: parsed.history, meta: parsed.meta, checksumOk: parsed.checksumOk, missing: false, error: null }
+        : p);
+      latestProjects.current = newProjs;
+      setProjects(newProjs);
+      const merged = await buildMergedDataFromProjects(newProjs, {
+        sizeInfo: latestData.current.health,
+        backups:  latestData.current.backups,
+      });
+      setData(merged);
+      showToast(`Reloaded ${name}`);
+    }
+  };
 
   // ---- Storage initialisation (runs once on mount) ----
   useEffectMain(() => {
@@ -121,7 +251,11 @@ function App() {
         // API mode needs no init — server is already running.
 
         if (cancelled) return;
-        await applyStorageData(mode, () => cancelled);
+        if (mode === 'api') {
+          await applyProjectsData(() => cancelled);
+        } else {
+          await applyStorageData(mode, () => cancelled);
+        }
       } catch (e) {
         if (cancelled) return;
         setStorageMode('local');
@@ -129,6 +263,23 @@ function App() {
       } finally {
         if (!cancelled) setIsLoading(false);
       }
+    }
+
+    async function applyProjectsData(isCancelled) {
+      const { data: newData, projects: projs } = await reloadProjects({ seedExpanded: true });
+      if (isCancelled?.()) return;
+
+      const saved = loadLocalState();
+      const pem = {};
+      for (const p of projs) pem[p.id] = saved?.projectExpandedMap?.[p.id] ?? true;
+      setProjectExpandedMap(pem);
+
+      if (projs.some(p => !p.checksumOk && p.meta)) setShowWarning(true);
+
+      SyncPoller.startMulti({
+        isDirty: () => isDirtyRef.current,
+        onExternalChange: handleExternalChangeMulti,
+      });
     }
 
     async function applyStorageData(mode, isCancelled) {
@@ -175,8 +326,8 @@ function App() {
 
   // Persist expanded/collapsed row state and tweaks locally. Data itself lives in backlog.md.
   useEffectMain(() => {
-    saveLocalState(latestExpandedMap.current, tweaks);
-  }, [expandedMap, tweaks]);
+    saveLocalState(latestExpandedMap.current, tweaks, latestProjectExpandedMap.current);
+  }, [expandedMap, projectExpandedMap, tweaks]);
 
   const showToast = (msg, kind = 'ok') => {
     setToast({ msg, kind, t: Date.now() });
@@ -221,7 +372,9 @@ function App() {
   };
 
   // ---- Real async save ----
-  const triggerSave = (label) => {
+  // projectId (string or array) restricts the save to that project(s);
+  // omitted = derive the dirty set from _projectId tags.
+  const triggerSave = (label, projectId = null) => {
     isDirtyRef.current = true;
     setSaveState(prev => ({ ...prev, status: 'saving' }));
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -230,14 +383,27 @@ function App() {
       const d  = latestData.current;
       const em = latestExpandedMap.current;
       try {
-        if (Storage.isConnected()) {
+        if (Storage.mode === 'api') {
+          // Unified api save path: serialize every DIRTY project separately.
+          // A single registered project is the same loop with one element.
+          const fallbackFirst = latestProjects.current[0]?.id ?? null;
+          const dirtyIds = computeDirtyProjectIds(d, projectId, fallbackFirst);
+          for (const pId of dirtyIds) {
+            const projectEntries = d.entries.filter(e => (e._projectId ?? fallbackFirst) === pId);
+            const projectHistory = d.history.filter(h => (h._projectId ?? fallbackFirst) === pId);
+            const content = await Parser.serialize({ entries: projectEntries, history: projectHistory });
+            const result  = await ApiBackend.saveProject(pId, content);
+            // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
+            if (result?.checksum) SyncPoller.lastChecksums[pId] = result.checksum;
+          }
+        } else if (Storage.isConnected()) {
           const content = await Parser.serialize({ entries: d.entries, history: d.history });
           await Storage.save(content);
           // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
           const cm = content.match(/checksum:\s*(sha256:[a-f0-9]+)/);
           if (cm) SyncPoller.lastChecksum = cm[1];
         }
-        saveLocalState(em, tweaks);
+        saveLocalState(em, tweaks, latestProjectExpandedMap.current);
         isDirtyRef.current = false;
         const now = new Date().toISOString();
         setSaveState({ status: 'saved', lastSaved: now });
@@ -280,30 +446,37 @@ function App() {
   // ---- Mutations ----
   const onMutate = {
     setStatus: (id, status) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it || it.status === status) return;
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'status_changed', details: `${it.status} → ${status}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'status_changed', details: `${it.status} → ${status}` };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
         const wasDone = it.status === 'done';
         it.status = status;
         if (status !== 'blocked') it.reason = null;
         if (status === 'done')                    it.progress = 100;
         else if (wasDone && (it.progress ?? 0) >= 100) it.progress = 75;
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     setPriority: (id, priority) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it || it.priority === priority) return;
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'priority_changed', details: `${it.priority} → ${priority}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'priority_changed', details: `${it.priority} → ${priority}` };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
         it.priority = priority;
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     setProgress: (id, progress) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it) return;
@@ -311,12 +484,15 @@ function App() {
         if ((it.progress ?? 0) === v) return;
         const before = it.progress ?? 0;
         it.progress = v;
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'progress_changed', details: `${before}% → ${v}%` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'progress_changed', details: `${before}% → ${v}%` };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     moveWithinPriority: (id, dir) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const r = findParentList(d.entries, id);
         if (!r) return;
@@ -327,12 +503,15 @@ function App() {
         while (j >= 0 && j < r.list.length && r.list[j].priority !== me.priority) j += dir;
         if (j < 0 || j >= r.list.length) return;
         [r.list[i], r.list[j]] = [r.list[j], r.list[i]];
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'item_reordered', details: `moved ${dir < 0 ? 'up' : 'down'}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'item_reordered', details: `moved ${dir < 0 ? 'up' : 'down'}` };
+        if (me._projectId) histEntry._projectId = me._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
 
     reorder: (draggedId, targetId) => {
+      const item = findItem(data.entries, draggedId);
       mutate(d => {
         const src = findParentList(d.entries, draggedId);
         const tgt = findParentList(d.entries, targetId);
@@ -342,13 +521,38 @@ function App() {
         src.list.splice(draggedIdx, 1);
         const newTargetIdx = tgt.list.findIndex(x => x.id === targetId);
         tgt.list.splice(newTargetIdx, 0, dragged);
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: draggedId, action: 'item_reordered', details: `dropped before ${targetId}` });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: draggedId, action: 'item_reordered', details: `dropped before ${targetId}` };
+        if (dragged._projectId) histEntry._projectId = dragged._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave('Reordered');
+      triggerSave('Reordered', item?._projectId);
+    },
+
+    // Cross-project drag&drop (todo 6 section drop zones call this): move the
+    // node to the destination project's root, re-tagging the whole subtree.
+    // Both source and destination files change, so both are saved.
+    moveToProject: (draggedId, projectId) => {
+      const dragged = findItem(data.entries, draggedId);
+      if (!dragged || !projectId || dragged._projectId === projectId) return;
+      const srcProjectId = dragged._projectId ?? latestProjects.current[0]?.id ?? null;
+      mutate(d => {
+        const r = findParentList(d.entries, draggedId);
+        if (!r) return;
+        const i = r.list.findIndex(x => x.id === draggedId);
+        if (i < 0) return;
+        const [node] = r.list.splice(i, 1);
+        retagSubtree(node, projectId);
+        (function setLevel(it, lv) { it.level = lv; (it.children || []).forEach(c => setLevel(c, lv + 1)); })(node, 1);
+        d.entries.push(node);
+        const histEntry = { timestamp: new Date().toISOString(), itemId: draggedId, action: 'item_reordered', details: `moved to project ${projectId}` };
+        histEntry._projectId = projectId;
+        d.history.unshift(histEntry);
+      });
+      triggerSave('Moved', [srcProjectId, projectId]);
     },
 
     addChild: (parentId) => setItemDialog({ mode: 'add-child', parentId, initial: null }),
-    addRoot:  ()         => setItemDialog({ mode: 'add',       parentId: null, initial: null }),
+    addRoot:  (projectId = null) => setItemDialog({ mode: 'add', parentId: null, initial: null, projectId }),
 
     editItem: (id) => {
       const it = findItem(data.entries, id);
@@ -360,6 +564,7 @@ function App() {
       const it = findItem(data.entries, id);
       if (!it) return;
       const childCount = (() => { let n = 0; walkTree([it], () => n++); return n - 1; })();
+      const projectId = it._projectId ?? null;
       setConfirm({
         title: 'Delete this item?',
         message: <>Delete <strong>{it.title}</strong>{childCount > 0 ? ` and ${childCount} sub-item${childCount > 1 ? 's' : ''}` : ''}?</>,
@@ -375,33 +580,56 @@ function App() {
               return false;
             }
             remove(d.entries);
-            d.history.unshift({ timestamp: new Date().toISOString(), itemId: id, action: 'item_deleted', details: `final: ${it.status}` });
+            const histEntry = { timestamp: new Date().toISOString(), itemId: id, action: 'item_deleted', details: `final: ${it.status}` };
+            if (projectId) histEntry._projectId = projectId;
+            d.history.unshift(histEntry);
           });
           setConfirm(null);
-          triggerSave('Deleted');
+          triggerSave('Deleted', projectId);
         },
       });
     },
   };
 
+  // Which project does a NEW item belong to? An explicit hint (dialog select
+  // or section context — todos 6-7) wins; otherwise the first registered
+  // project. Non-api modes have no projects → null → item stays untagged.
+  const resolveTargetProjectId = (hint = null) => {
+    if (hint) return hint;
+    const first = latestProjects.current[0];
+    return first ? first.id : null;
+  };
+
   const submitItemDialog = (vals) => {
     if (itemDialog.mode === 'edit') {
+      const editedItem = findItem(data.entries, itemDialog.itemId);
       mutate(d => {
         const x = findItem(d.entries, itemDialog.itemId);
         if (!x) return;
         const before = { priority: x.priority, status: x.status };
         Object.assign(x, vals);
-        if (before.status !== vals.status)
-          d.history.unshift({ timestamp: new Date().toISOString(), itemId: x.id, action: 'status_changed', details: `${before.status} → ${vals.status}` });
-        if (before.priority !== vals.priority)
-          d.history.unshift({ timestamp: new Date().toISOString(), itemId: x.id, action: 'priority_changed', details: `${before.priority} → ${vals.priority}` });
+        if (before.status !== vals.status) {
+          const histEntry = { timestamp: new Date().toISOString(), itemId: x.id, action: 'status_changed', details: `${before.status} → ${vals.status}` };
+          if (x._projectId) histEntry._projectId = x._projectId;
+          d.history.unshift(histEntry);
+        }
+        if (before.priority !== vals.priority) {
+          const histEntry = { timestamp: new Date().toISOString(), itemId: x.id, action: 'priority_changed', details: `${before.priority} → ${vals.priority}` };
+          if (x._projectId) histEntry._projectId = x._projectId;
+          d.history.unshift(histEntry);
+        }
       });
-      triggerSave('Saved');
+      triggerSave('Saved', editedItem?._projectId);
     } else {
       const newId = 'n-' + Math.random().toString(36).slice(2, 8);
+      const parentForTarget = itemDialog.mode === 'add-child' && itemDialog.parentId
+        ? findItem(data.entries, itemDialog.parentId)
+        : null;
+      const targetProjectId = resolveTargetProjectId(itemDialog.projectId || parentForTarget?._projectId || null);
       mutate(d => {
         const node = { id: newId, level: 1, ...vals, children: [], collapsed: false };
-        if (itemDialog.mode === 'add-child' && itemDialog.parentId) {
+        if (targetProjectId) node._projectId = targetProjectId;
+        if (parentForTarget) {
           const parent = findItem(d.entries, itemDialog.parentId);
           if (parent) {
             parent.children = parent.children || [];
@@ -412,9 +640,11 @@ function App() {
         } else {
           d.entries.push(node);
         }
-        d.history.unshift({ timestamp: new Date().toISOString(), itemId: newId, action: 'item_created', details: vals.title });
+        const histEntry = { timestamp: new Date().toISOString(), itemId: newId, action: 'item_created', details: vals.title };
+        if (targetProjectId) histEntry._projectId = targetProjectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave('Added');
+      triggerSave('Added', targetProjectId);
     }
     setItemDialog(null);
   };
@@ -496,11 +726,17 @@ function App() {
           if (Storage.isConnected()) {
             const result = await Storage.restoreBackup(b.name);
             if (!result.ok) throw new Error(result.error || 'Restore failed');
-            const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getHealthInfo()]);
-            const parsed  = await Parser.parse(raw?.content || '');
-            const newData = await buildDataFromStorage(parsed, backups, storageMode, sizeInfo);
-            setData(newData);
-            SyncPoller.lastChecksum = parsed.meta?.checksum || '';
+            if (Storage.mode === 'api') {
+              // The legacy backup route restored the default project — refresh everything.
+              await reloadProjects({ seedExpanded: false });
+              await SyncPoller.syncChecksums();
+            } else {
+              const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getHealthInfo()]);
+              const parsed  = await Parser.parse(raw?.content || '');
+              const newData = await buildDataFromStorage(parsed, backups, storageMode, sizeInfo);
+              setData(newData);
+              SyncPoller.lastChecksum = parsed.meta?.checksum || '';
+            }
             isDirtyRef.current = false;
           }
           showToast(`Restored from ${b.name.slice(0, 28)}…`);
@@ -513,22 +749,49 @@ function App() {
 
   // ---- Import entries from parsed content ----
   const handleImport = ({ entries, history }) => {
+    // In api mode imported rows land in the first project (todo 8 adds a
+    // target-project selector); other projects are left untouched.
+    const pid = Storage.mode === 'api' ? resolveTargetProjectId() : null;
     mutate(d => {
+      if (pid) {
+        for (const e of entries) e._projectId = pid;
+      }
       d.entries = entries;
-      if (history?.length) d.history = [...history, ...d.history];
-      d.history.unshift({ timestamp: new Date().toISOString(), itemId: 'system', action: 'imported', details: `${entries.length} top-level entries` });
+      if (history?.length) d.history = [...history.map(h => pid ? { ...h, _projectId: pid } : h), ...d.history];
+      const histEntry = { timestamp: new Date().toISOString(), itemId: 'system', action: 'imported', details: `${entries.length} top-level entries` };
+      if (pid) histEntry._projectId = pid;
+      d.history.unshift(histEntry);
     });
     setImportExportOpen(false);
-    triggerSave('Imported');
+    triggerSave('Imported', pid);
   };
 
   // ---- Archive functions ----
   const loadArchive = async () => {
     try {
-      const raw = await Storage.loadArchive();
-      if (raw.exists && raw.content) {
-        const parsed = await Parser.parse(raw.content);
-        setArchiveData({ entries: parsed.entries || [], history: parsed.history || [] });
+      if (Storage.mode === 'api') {
+        // Each project has its own archive.md — merge them, tagged per project.
+        const projs = latestProjects.current;
+        const parsedAll = await Promise.all(projs.map(async p => {
+          try {
+            const raw = await ApiBackend.loadArchive(p.id);
+            if (raw.exists && raw.content) return await Parser.parse(raw.content);
+          } catch (e) { console.error(`Failed to load archive for ${p.id}:`, e); }
+          return { entries: [], history: [] };
+        }));
+        const entries = [], history = [];
+        projs.forEach((p, i) => {
+          for (const e of parsedAll[i].entries) e._projectId = p.id;
+          entries.push(...parsedAll[i].entries);
+          history.push(...parsedAll[i].history);
+        });
+        setArchiveData({ entries, history });
+      } else {
+        const raw = await Storage.loadArchive();
+        if (raw.exists && raw.content) {
+          const parsed = await Parser.parse(raw.content);
+          setArchiveData({ entries: parsed.entries || [], history: parsed.history || [] });
+        }
       }
     } catch (e) {
       console.error('Failed to load archive:', e);
@@ -561,32 +824,74 @@ function App() {
     // Remove from backlog
     const { entries: newEntries } = removeItems([...data.entries], itemIds);
 
-    // Add to archive
-    const newArchiveEntries = [...archiveData.entries, ...toArchive];
-
     // Add history entries
     const newHistory = [...data.history];
     for (const item of toArchive) {
-      newHistory.unshift({
+      const histEntry = {
         timestamp: new Date().toISOString(),
         itemId: item.id,
         action: 'item_archived',
         details: `moved to archive.md`
-      });
+      };
+      if (item._projectId) histEntry._projectId = item._projectId;
+      newHistory.unshift(histEntry);
     }
 
-    try {
-      // Serialize both files
-      const backlogContent = await Parser.serialize({ entries: newEntries, history: newHistory });
-      const archiveContent = await Parser.serialize({ entries: newArchiveEntries, history: archiveData.history });
+    // Add to archive
+    const newArchiveEntries = [...archiveData.entries, ...toArchive];
 
-      // Save both atomically
-      const result = await Storage.saveArchive(backlogContent, archiveContent);
-      if (!result.ok) throw new Error('Archive failed');
+    try {
+      if (Storage.mode === 'api') {
+        // Per-project archive: group the batch by _projectId, then for each
+        // affected project write its remaining backlog + its own archive.
+        const fallbackFirst = latestProjects.current[0]?.id ?? null;
+        const pidOf = x => x._projectId ?? fallbackFirst;
+        const groups = new Map();
+        for (const item of toArchive) {
+          const pid = pidOf(item);
+          if (!groups.has(pid)) groups.set(pid, []);
+          groups.get(pid).push(item);
+        }
+        const existing = await Promise.all([...groups.keys()].map(async pid => {
+          try {
+            const raw = await ApiBackend.loadArchive(pid);
+            if (raw.exists && raw.content) {
+              const parsed = await Parser.parse(raw.content);
+              return { pid, entries: parsed.entries || [], history: parsed.history || [] };
+            }
+          } catch (e) { console.error(`Failed to load archive for ${pid}:`, e); }
+          return { pid, entries: [], history: [] };
+        }));
+        for (const { pid, entries: archEntries, history: archHistory } of existing) {
+          const backlogContent = await Parser.serialize({
+            entries: newEntries.filter(e => pidOf(e) === pid),
+            history: newHistory.filter(h => pidOf(h) === pid),
+          });
+          const archiveContent = await Parser.serialize({
+            entries: [...archEntries, ...groups.get(pid)],
+            history: archHistory,
+          });
+          const result = await ApiBackend.saveArchive(backlogContent, archiveContent, pid);
+          if (!result.ok) throw new Error('Archive failed');
+        }
+        await SyncPoller.syncChecksums();
+      } else {
+        // Serialize both files
+        const backlogContent = await Parser.serialize({ entries: newEntries, history: newHistory });
+        const archiveContent = await Parser.serialize({ entries: newArchiveEntries, history: archiveData.history });
+
+        // Save both atomically
+        const result = await Storage.saveArchive(backlogContent, archiveContent);
+        if (!result.ok) throw new Error('Archive failed');
+      }
 
       // Update local state
       setData(d => ({ ...d, entries: newEntries, history: newHistory }));
-      setArchiveData({ entries: newArchiveEntries, history: archiveData.history });
+      if (Storage.mode === 'api') {
+        await loadArchive(); // refresh the merged per-project archive view from disk
+      } else {
+        setArchiveData({ entries: newArchiveEntries, history: archiveData.history });
+      }
       isDirtyRef.current = false;
 
       showToast(`Archived ${toArchive.length} item${toArchive.length > 1 ? 's' : ''}`);
@@ -628,26 +933,52 @@ function App() {
     // Add history entries
     const newHistory = [...data.history];
     for (const item of toRestore) {
-      newHistory.unshift({
+      const histEntry = {
         timestamp: new Date().toISOString(),
         itemId: item.id,
         action: 'item_restored',
         details: `restored from archive`
-      });
+      };
+      if (item._projectId) histEntry._projectId = item._projectId;
+      newHistory.unshift(histEntry);
     }
 
     try {
-      // Serialize both files
-      const backlogContent = await Parser.serialize({ entries: newEntries, history: newHistory });
-      const archiveContent = await Parser.serialize({ entries: remainingArchive, history: archiveData.history });
+      if (Storage.mode === 'api') {
+        // Mirror of the archive flow per project: only projects whose items
+        // were restored get their backlog + archive rewritten.
+        const fallbackFirst = latestProjects.current[0]?.id ?? null;
+        const pidOf = x => x._projectId ?? fallbackFirst;
+        for (const pid of [...new Set(toRestore.map(pidOf))]) {
+          const backlogContent = await Parser.serialize({
+            entries: newEntries.filter(e => pidOf(e) === pid),
+            history: newHistory.filter(h => pidOf(h) === pid),
+          });
+          const archiveContent = await Parser.serialize({
+            entries: remainingArchive.filter(e => pidOf(e) === pid),
+            history: [],
+          });
+          const result = await ApiBackend.restoreFromArchive(backlogContent, archiveContent, pid);
+          if (!result.ok) throw new Error('Restore failed');
+        }
+        await SyncPoller.syncChecksums();
+      } else {
+        // Serialize both files
+        const backlogContent = await Parser.serialize({ entries: newEntries, history: newHistory });
+        const archiveContent = await Parser.serialize({ entries: remainingArchive, history: archiveData.history });
 
-      // Save both atomically
-      const result = await Storage.restoreFromArchive(backlogContent, archiveContent);
-      if (!result.ok) throw new Error('Restore failed');
+        // Save both atomically
+        const result = await Storage.restoreFromArchive(backlogContent, archiveContent);
+        if (!result.ok) throw new Error('Restore failed');
+      }
 
       // Update local state
       setData(d => ({ ...d, entries: newEntries, history: newHistory }));
-      setArchiveData({ entries: remainingArchive, history: archiveData.history });
+      if (Storage.mode === 'api') {
+        await loadArchive(); // refresh the merged per-project archive view from disk
+      } else {
+        setArchiveData({ entries: remainingArchive, history: archiveData.history });
+      }
       isDirtyRef.current = false;
 
       let msg = `Restored ${toRestore.length} item${toRestore.length > 1 ? 's' : ''}`;
@@ -1169,5 +1500,13 @@ function ArchiveSearchResults({ query, archiveEntries, onRestore, onLoadArchive,
     </div>
   );
 }
+
+// Multi-project data-layer helpers — consumed by todos 6-8 (sections UI,
+// dialogs, admin) and the todo-5 verification harness.
+Object.assign(window, {
+  buildMergedDataFromProjects,
+  computeDirtyProjectIds,
+  retagSubtree,
+});
 
 window.App = App;
