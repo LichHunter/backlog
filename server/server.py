@@ -15,7 +15,8 @@ import sys
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from typing import NamedTuple
+from urllib.parse import parse_qs, urlparse, unquote
 
 
 class Config:
@@ -113,60 +114,71 @@ def build_markdown(entries_text: str, history_text: str) -> str:
 # ---------------------------------------------------------------------------
 # File operations
 # ---------------------------------------------------------------------------
+# Path-parameterized cores (*_at) serve any project; the bare-name wrappers
+# keep the legacy single-project API bound to the resolved default project.
 
-def read_master() -> dict:
-    if not CONFIG.master.exists():
-        return {"content": build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|"), "checksum": "", "size": 0}
-    text = CONFIG.master.read_text(encoding="utf-8")
-    entries, history, meta = parse_markdown_sections(text)
+BLANK_HISTORY = "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|"
+
+
+class ProjectPaths(NamedTuple):
+    master: Path
+    archive: Path
+    backups_dir: Path
+
+
+def read_master_at(master: Path) -> dict:
+    if not master.exists():
+        return {"content": build_markdown("", BLANK_HISTORY), "checksum": "", "size": 0}
+    text = master.read_text(encoding="utf-8")
+    _, _, meta = parse_markdown_sections(text)
     checksum = meta["checksum"] if meta else ""
     return {"content": text, "checksum": checksum, "size": len(text.encode("utf-8"))}
 
 
-def write_master(content: str) -> dict:
-    """Atomic write with backup."""
-    tmp = CONFIG.master.with_suffix(".md.tmp")
-    # Write temp
+def write_master_at(content: str, paths: ProjectPaths) -> dict:
+    """Atomic write with backup. Creates the project's parent/backups dirs on demand."""
+    paths.master.parent.mkdir(parents=True, exist_ok=True)
+    tmp = paths.master.with_suffix(".md.tmp")
     tmp.write_text(content, encoding="utf-8")
-    # Verify it parses
-    parse_markdown_sections(content)
+    parse_markdown_sections(content)  # verify it parses
     # Create backup (millis to avoid collisions)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     millis = datetime.now(timezone.utc).strftime("%f")[:3]
     backup_name = f"backlog_{timestamp}-{millis}.md"
-    backup_path = CONFIG.backups_dir / backup_name
-    shutil.copy2(tmp, backup_path)
-    rotate_backups()
+    paths.backups_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(tmp, paths.backups_dir / backup_name)
+    rotate_backups_at(paths.backups_dir)
     # Atomic rename
-    tmp.replace(CONFIG.master)
-    # Stats
+    tmp.replace(paths.master)
+    # Stats stay global (single analytics log in the data dir)
     append_stats({"t": datetime.now(timezone.utc).isoformat(), "e": "save_completed", "d": {"size": len(content.encode("utf-8"))}})
     _, _, meta = parse_markdown_sections(content)
     return {"ok": True, "checksum": meta["checksum"] if meta else "", "saved": meta["saved"] if meta else ""}
 
 
-def read_archive() -> dict:
+def read_archive_at(archive: Path) -> dict:
     """Read archive.md, return empty structure if not exists."""
-    if not CONFIG.archive.exists():
+    if not archive.exists():
         return {"content": "", "checksum": "", "size": 0, "exists": False}
-    text = CONFIG.archive.read_text(encoding="utf-8")
-    entries, history, meta = parse_markdown_sections(text)
+    text = archive.read_text(encoding="utf-8")
+    _, _, meta = parse_markdown_sections(text)
     checksum = meta["checksum"] if meta else ""
     return {"content": text, "checksum": checksum, "size": len(text.encode("utf-8")), "exists": True}
 
 
-def write_archive(content: str) -> dict:
+def write_archive_at(content: str, paths: ProjectPaths) -> dict:
     """Write archive.md (append-only semantics enforced at API level)."""
-    tmp = CONFIG.archive.with_suffix(".md.tmp")
+    paths.archive.parent.mkdir(parents=True, exist_ok=True)
+    tmp = paths.archive.with_suffix(".md.tmp")
     tmp.write_text(content, encoding="utf-8")
-    parse_markdown_sections(content)  # Verify it parses
-    tmp.replace(CONFIG.archive)
+    parse_markdown_sections(content)  # verify it parses
+    tmp.replace(paths.archive)
     _, _, meta = parse_markdown_sections(content)
     return {"ok": True, "checksum": meta["checksum"] if meta else "", "saved": meta["saved"] if meta else ""}
 
 
-def rotate_backups():
-    files = sorted(CONFIG.backups_dir.glob("backlog_*.md"), key=lambda p: p.stat().st_mtime)
+def rotate_backups_at(backups_dir: Path):
+    files = sorted(backups_dir.glob("backlog_*.md"), key=lambda p: p.stat().st_mtime)
     if not files:
         return
     now = datetime.now(timezone.utc)
@@ -180,9 +192,9 @@ def rotate_backups():
             f.unlink()
 
 
-def list_backups() -> list:
+def list_backups_at(backups_dir: Path) -> list:
     result = []
-    for f in sorted(CONFIG.backups_dir.glob("backlog_*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for f in sorted(backups_dir.glob("backlog_*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
         text = f.read_text(encoding="utf-8")
         _, _, meta = parse_markdown_sections(text)
         result.append({
@@ -194,14 +206,43 @@ def list_backups() -> list:
     return result
 
 
-def restore_backup(name: str) -> dict:
-    src = CONFIG.backups_dir / name
+def restore_backup_at(name: str, paths: ProjectPaths) -> dict:
+    src = paths.backups_dir / name
     if not src.exists():
         return {"ok": False, "error": "Backup not found"}
     text = src.read_text(encoding="utf-8")
     parse_markdown_sections(text)  # validate readable
-    shutil.copy2(src, CONFIG.master)
+    paths.master.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, paths.master)
     return {"ok": True}
+
+
+def read_master() -> dict:
+    return read_master_at(resolve_default_project().master)
+
+
+def write_master(content: str) -> dict:
+    return write_master_at(content, resolve_default_project())
+
+
+def read_archive() -> dict:
+    return read_archive_at(resolve_default_project().archive)
+
+
+def write_archive(content: str) -> dict:
+    return write_archive_at(content, resolve_default_project())
+
+
+def rotate_backups():
+    rotate_backups_at(resolve_default_project().backups_dir)
+
+
+def list_backups() -> list:
+    return list_backups_at(resolve_default_project().backups_dir)
+
+
+def restore_backup(name: str) -> dict:
+    return restore_backup_at(name, resolve_default_project())
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +290,45 @@ def get_project_path(name: str) -> Path:
     if name not in registry:
         raise KeyError(name)
     return Path(registry[name]["path"]).resolve()
+
+
+def project_paths(name: str) -> ProjectPaths:
+    """Paths for a registered project; KeyError when the name is unknown."""
+    master = get_project_path(name)
+    return ProjectPaths(master=master, archive=master.parent / "archive.md", backups_dir=master.parent / "backups")
+
+
+def resolve_default_project_name() -> str:
+    """'default' when registered, else the first registry entry (insertion order)."""
+    registry = CONFIG.load_registry()
+    if "default" in registry:
+        return "default"
+    return next(iter(registry), "default")
+
+
+def resolve_default_project() -> ProjectPaths:
+    """Paths legacy routes operate on; CONFIG paths when the registry is empty/corrupt."""
+    try:
+        return project_paths(resolve_default_project_name())
+    except KeyError:
+        return ProjectPaths(master=CONFIG.master, archive=CONFIG.archive, backups_dir=CONFIG.backups_dir)
+
+
+def list_projects() -> list:
+    """Summary entries for GET /api/projects, in registry insertion order."""
+    projects = []
+    for name, entry in CONFIG.load_registry().items():
+        master = Path(entry["path"]).resolve()
+        missing = not master.exists()
+        checksum = ""
+        size = 0
+        if not missing:
+            size = master.stat().st_size
+            _, _, meta = parse_markdown_sections(master.read_text(encoding="utf-8"))
+            if meta:
+                checksum = meta["checksum"]
+        projects.append({"name": name, "path": str(master), "size": size, "checksum": checksum, "missing": missing})
+    return projects
 
 
 def auto_register_default():
@@ -311,6 +391,30 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8")
         return json.loads(body)
 
+    def _read_json_body_or_400(self):
+        """Parsed JSON body, or None after responding 400 to malformed JSON."""
+        try:
+            return self._read_json_body()
+        except json.JSONDecodeError as e:
+            self._json_response({"error": f"Invalid JSON: {e}"}, 400)
+            return None
+
+    def _project_route_parts(self, path: str) -> tuple:
+        """'/api/projects/<name>[/<action>...]' → (url-decoded name, action)."""
+        rest = path[len("/api/projects/"):]
+        name, _, action = rest.partition("/")
+        return unquote(name), action
+
+    def _resolve_project_or_404(self, name: str):
+        """ProjectPaths for name, or None after responding 404 (empty/unknown)."""
+        try:
+            if name:
+                return project_paths(name)
+        except KeyError:
+            pass
+        self._json_response({"error": "Project not found"}, 404)
+        return None
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -347,21 +451,60 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_response({"error": "Not found"}, 404)
             return
 
+        if path == "/api/projects":
+            self._json_response({"projects": list_projects()})
+            return
+
+        if path.startswith("/api/projects/"):
+            name, action = self._project_route_parts(path)
+            paths = self._resolve_project_or_404(name)
+            if paths is None:
+                return
+            if action == "backlog":
+                info = read_master_at(paths.master)
+                client_checksum = qs.get("checksum", [None])[0]
+                if client_checksum and client_checksum == info["checksum"]:
+                    self.send_response(304)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    return
+                self._json_response({"content": info["content"], "checksum": info["checksum"]})
+                return
+            if action == "archive":
+                info = read_archive_at(paths.archive)
+                if not info["exists"]:
+                    self._json_response({"content": "", "checksum": "", "exists": False})
+                    return
+                client_checksum = qs.get("checksum", [None])[0]
+                if client_checksum and client_checksum == info["checksum"]:
+                    self.send_response(304)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    return
+                self._json_response({"content": info["content"], "checksum": info["checksum"], "exists": True})
+                return
+            if action == "backups":
+                self._json_response({"backups": list_backups_at(paths.backups_dir)})
+                return
+            self._json_response({"error": "Not found"}, 404)
+            return
+
         if path == "/api/health":
-            info = read_master()
-            archive_info = read_archive()
-            backups = list_backups()
+            paths = resolve_default_project()
+            info = read_master_at(paths.master)
+            archive_info = read_archive_at(paths.archive)
+            backups = list_backups_at(paths.backups_dir)
             self._json_response({
                 "status": "ok",
                 "lastSave": info.get("meta", {}).get("saved", "") if isinstance(info, dict) else "",
                 "lastBackup": backups[0]["timestamp"] if backups else "",
-                "masterSize": CONFIG.master.stat().st_size if CONFIG.master.exists() else 0,
+                "masterSize": paths.master.stat().st_size if paths.master.exists() else 0,
                 "backupCount": len(backups),
-                "masterPath": str(CONFIG.master),
-                "backupsPath": str(CONFIG.backups_dir),
+                "masterPath": str(paths.master),
+                "backupsPath": str(paths.backups_dir),
                 "archiveExists": archive_info["exists"],
                 "archiveSize": archive_info["size"],
-                "archivePath": str(CONFIG.archive),
+                "archivePath": str(paths.archive),
             })
             return
 
@@ -396,7 +539,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/backups/"):
             name = path[len("/api/backups/"):]
-            backup_path = CONFIG.backups_dir / name
+            backup_path = resolve_default_project().backups_dir / name
             self._file_response(backup_path, "text/markdown")
             return
 
@@ -410,6 +553,46 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path.startswith("/api/projects/"):
+            name, action = self._project_route_parts(path)
+            body = self._read_json_body_or_400()
+            if body is None:
+                return
+            paths = self._resolve_project_or_404(name)
+            if paths is None:
+                return
+            if action == "backlog":
+                result = write_master_at(body.get("content", ""), paths)
+                self._json_response(result)
+                return
+            if action == "archive":
+                # Archive items: save both backlog and archive atomically
+                backlog_content = body.get("backlog", "")
+                archive_content = body.get("archive", "")
+                parse_markdown_sections(backlog_content)
+                parse_markdown_sections(archive_content)
+                # Write archive first (append-only), then backlog
+                archive_result = write_archive_at(archive_content, paths)
+                backlog_result = write_master_at(backlog_content, paths)
+                self._json_response({"ok": True, "backlog": backlog_result, "archive": archive_result})
+                return
+            if action == "archive/restore":
+                # Restore items from archive: save both backlog and archive atomically
+                backlog_content = body.get("backlog", "")
+                archive_content = body.get("archive", "")
+                parse_markdown_sections(backlog_content)
+                parse_markdown_sections(archive_content)
+                backlog_result = write_master_at(backlog_content, paths)
+                archive_result = write_archive_at(archive_content, paths)
+                self._json_response({"ok": True, "backlog": backlog_result, "archive": archive_result})
+                return
+            if action == "backups/restore":
+                result = restore_backup_at(body.get("name", ""), paths)
+                self._json_response(result)
+                return
+            self._json_response({"error": "Not found"}, 404)
+            return
 
         if path == "/api/backlog":
             body = self._read_json_body()
@@ -496,8 +679,7 @@ class Handler(BaseHTTPRequestHandler):
 def initialize_storage():
     CONFIG.ensure_dirs()
     if not CONFIG.master.exists():
-        blank = build_markdown("", "| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|---------|")
-        CONFIG.master.write_text(blank, encoding="utf-8")
+        CONFIG.master.write_text(build_markdown("", BLANK_HISTORY), encoding="utf-8")
         print(f"[init] Created blank {CONFIG.master}")
     auto_register_default()
 
