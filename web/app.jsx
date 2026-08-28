@@ -962,6 +962,7 @@ function App() {
         const entries = [], history = [];
         projs.forEach((p, i) => {
           for (const e of parsedAll[i].entries) e._projectId = p.id;
+          for (const h of parsedAll[i].history) h._projectId = p.id;
           entries.push(...parsedAll[i].entries);
           history.push(...parsedAll[i].history);
         });
@@ -1139,7 +1140,7 @@ function App() {
           ));
           const archiveContent = await Parser.serialize(toDiskIds(
             remainingArchive.filter(e => pidOf(e) === pid),
-            [],
+            archiveData.history.filter(h => pidOf(h) === pid),
             pid,
           ));
           const result = await ApiBackend.restoreFromArchive(backlogContent, archiveContent, pid);
