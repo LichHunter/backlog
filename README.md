@@ -128,6 +128,7 @@ The `restore-path` stores the original parent chain, allowing items to be restor
 - **Admin page** — health monitoring, backup browser, archive manager, stats overview, manual actions
 - **Dark mode** — system / light / dark, configurable in Admin → Appearance; persisted across reloads
 - **Icon sets** — 4 styles (Color, Flat, Emoji, ASCII), configurable in Admin → Appearance; persisted across reloads
+- **Multiple projects** — track several `backlog.md` files at once (API server mode); each stays a plain, version-controllable file anywhere on disk
 - **Chrome / Edge direct file access** — reads and writes `backlog.md` on disk directly via the File System Access API; no server needed
 - **Firefox / Safari support** — full read-write via IndexedDB when File System Access API is unavailable; export to `.md`/`.json` anytime to get a portable file
 
@@ -144,6 +145,24 @@ The app detects which mode to use automatically:
 | **Saves to disk** | Yes — plain `.md` file | Yes — plain `.md` file | No — browser storage only |
 | **LAN access** | Yes (phone, tablet) | No (local browser only) | No |
 | **Admin shows paths** | Yes (full path) | Folder name only | — |
+
+### Multiple Projects (API Server Mode)
+
+In API server mode the server can track several task files. It keeps a small registry (`projects.json` in the data dir) of which files belong to the app. Each project is still a plain `backlog.md` anywhere on disk — readable, editable, and version-controllable with any tool, as before. `backups/` and `archive.md` live next to each project's file; `stats.jsonl` stays global in the data dir.
+
+Register a project via **Admin → Projects** (a path to a directory or a `.md` file), or from the command line:
+
+```bash
+curl -X POST localhost:8080/api/projects -H 'Content-Type: application/json' -d '{"path": "/path/to/dir"}'
+```
+
+Directories get `backlog.md` appended automatically; a missing file is created. An optional `"name"` field sets the display name.
+
+With one project the app looks exactly as before. With several, the main view splits into collapsible per-project sections — rename or remove a project from its section header or from Admin. Import/Export picks a target project in multi mode.
+
+NixOS: works out of the box — the `dataDir` `backlog.md` is auto-registered as `default` on first start. No module config change needed.
+
+Standalone HTML (direct file access and IndexedDB modes) stays single-project.
 
 ### Why the Folder Picker? (Direct Mode)
 

@@ -1413,6 +1413,94 @@ input { font: inherit; color: inherit; }
 .rte-readonly:empty::before { content: 'No details'; color: var(--ink-3); }
 .tag-list-readonly { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* ---------- Project sections (multi-project api mode) ---------- */
+.project-sections { display: flex; flex-direction: column; gap: 16px; }
+.project-section {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.project-section-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  background: var(--bg-2); cursor: pointer; user-select: none;
+  border-bottom: 1px solid transparent; transition: background 0.15s;
+}
+.project-section-header:hover { background: var(--accent-soft); }
+.project-section-header.expanded { border-bottom-color: var(--rule); }
+.project-section-header.missing .project-section-name { color: var(--ink-3); }
+.project-section-chevron { color: var(--ink-3); width: 14px; display: inline-flex; }
+.project-section-name { font-weight: 600; font-size: 14px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-section-count { font-size: 12px; color: var(--ink-3); margin-left: 4px; white-space: nowrap; }
+.project-section-actions {
+  margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s;
+}
+.project-section-header:hover .project-section-actions,
+.project-section-header:focus-within .project-section-actions { opacity: 1; }
+.project-section-btn {
+  padding: 4px 6px; border: none; background: transparent;
+  color: var(--ink-3); cursor: pointer; border-radius: var(--radius); transition: background 0.15s, color 0.15s;
+}
+.project-section-btn:hover { background: var(--accent-soft); color: var(--accent); }
+.project-section-btn-danger:hover { background: var(--danger-soft); color: var(--danger); }
+.project-section-content { padding: 8px 0; }
+.project-section-content.drop-target {
+  outline: 2px dashed var(--accent-edge);
+  outline-offset: -4px;
+  background: var(--accent-soft);
+}
+.project-empty { padding: 20px; text-align: center; color: var(--ink-3); font-size: 13px; }
+.project-empty .mono { font-family: var(--font-mono); font-size: 12px; }
+.project-missing-badge {
+  font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 999px;
+  color: var(--warn); background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  white-space: nowrap;
+}
+.dlg-checkbox {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px;
+  font-size: 13px; color: var(--ink-2); cursor: pointer;
+}
+.dlg-checkbox input { width: 16px; height: 16px; accent-color: var(--danger); cursor: pointer; }
+
+/* ---- Admin Projects card + import/export target select (multi-project) ---- */
+.projects-table .projects-path {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projects-register {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 14px; flex-wrap: wrap;
+}
+.projects-input {
+  flex: 1 1 auto; min-width: 0;
+  font-family: var(--font-mono); font-size: 12.5px;
+  padding: 7px 10px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+}
+.projects-input::placeholder { color: var(--ink-3); }
+.projects-input:focus { outline: none; border-color: var(--accent-edge); }
+.projects-input-name { flex: 0 1 200px; font-family: inherit; }
+.ie-target-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 12px;
+}
+.ie-target-label {
+  font-size: 11px; font-weight: 600;
+  color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.ie-target {
+  font: inherit; font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+  cursor: pointer;
+}
+
 </style>
 </head>
 <body>
@@ -3174,13 +3262,15 @@ const ApiBackend = {
       return {};
     }
   },
-  async loadArchive() {
-    const r = await fetch('/api/archive');
+  async loadArchive(project = null) {
+    const url = project ? `/api/projects/${encodeURIComponent(project)}/archive` : '/api/archive';
+    const r = await fetch(url);
     if (!r.ok) throw new Error('API archive load failed: ' + r.status);
     return r.json(); // { content, checksum, exists }
   },
-  async saveArchive(backlogContent, archiveContent) {
-    const r = await fetch('/api/archive', {
+  async saveArchive(backlogContent, archiveContent, project = null) {
+    const url = project ? `/api/projects/${encodeURIComponent(project)}/archive` : '/api/archive';
+    const r = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -3193,8 +3283,9 @@ const ApiBackend = {
     if (!r.ok) throw new Error('API archive save failed: ' + r.status);
     return r.json();
   },
-  async restoreFromArchive(backlogContent, archiveContent) {
-    const r = await fetch('/api/archive/restore', {
+  async restoreFromArchive(backlogContent, archiveContent, project = null) {
+    const url = project ? `/api/projects/${encodeURIComponent(project)}/archive/restore` : '/api/archive/restore';
+    const r = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -3206,6 +3297,112 @@ const ApiBackend = {
     });
     if (!r.ok) throw new Error('API archive restore failed: ' + r.status);
     return r.json();
+  },
+  // ---- Project-scoped methods (multi-project server API) ----
+
+  async listProjects() {
+    const r = await fetch('/api/projects');
+    if (!r.ok) throw new Error('API projects failed: ' + r.status);
+    return (await r.json()).projects || [];
+  },
+  async registerProject(path, name = null) {
+    const r = await fetch('/api/projects', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        path,
+        name
+      })
+    });
+    return r.json(); // { ok, name, path }
+  },
+  async unregisterProject(name, deleteFile = false) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}${deleteFile ? '?delete_file=true' : ''}`, {
+      method: 'DELETE'
+    });
+    return r.json(); // { ok, name, deleted, warning? }
+  },
+  async renameProject(name, newName) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}/rename`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        newName
+      })
+    });
+    return r.json(); // { ok, name }
+  },
+  async loadProject(name) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}/backlog`);
+    if (!r.ok) throw new Error('API project load failed: ' + r.status);
+    return r.json(); // { content, checksum }
+  },
+  async saveProject(name, content) {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}/backlog`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        content
+      })
+    });
+    if (!r.ok) throw new Error('API project save failed: ' + r.status);
+    return r.json(); // { ok, checksum, saved }
+  },
+  async loadProjectBackups(name) {
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(name)}/backups`);
+      if (!r.ok) return [];
+      return (await r.json()).backups || [];
+    } catch {
+      return [];
+    }
+  },
+  async loadAllProjects() {
+    const list = await this.listProjects();
+    return Promise.all(list.map(async p => {
+      if (p.missing) {
+        return {
+          id: p.name,
+          name: p.name,
+          path: p.path,
+          entries: [],
+          history: [],
+          meta: null,
+          checksumOk: true,
+          missing: true
+        };
+      }
+      try {
+        const raw = await this.loadProject(p.name);
+        const parsed = await Parser.parse(raw.content);
+        return {
+          id: p.name,
+          name: p.name,
+          path: p.path,
+          entries: parsed.entries,
+          history: parsed.history,
+          meta: parsed.meta,
+          checksumOk: parsed.checksumOk
+        };
+      } catch (e) {
+        return {
+          id: p.name,
+          name: p.name,
+          path: p.path,
+          entries: [],
+          history: [],
+          meta: null,
+          checksumOk: false,
+          error: String(e.message || e)
+        };
+      }
+    }));
   }
 };
 
@@ -3690,21 +3887,51 @@ const Storage = {
 const SyncPoller = {
   _timer: null,
   lastChecksum: '',
+  lastChecksums: {},
+  // multi-project mode: { projectName: checksum }
   _onExternalChange: null,
   _isDirty: null,
+  _multi: false,
   start({
     onExternalChange,
     isDirty
   }) {
     this._onExternalChange = onExternalChange;
     this._isDirty = isDirty;
+    this._multi = false;
     this._timer = setInterval(() => this._tick(), 5000);
+  },
+  // Multi-project mode (api only): poll GET /api/projects — ONE round trip for
+  // all checksums. A changed project is reloaded individually; a changed
+  // project SET (registered/renamed/unregistered externally) triggers a full
+  // reload via the 'set-changed' callback.
+  startMulti({
+    onExternalChange,
+    isDirty
+  }) {
+    this._onExternalChange = onExternalChange;
+    this._isDirty = isDirty;
+    this._multi = true;
+    this.lastChecksums = {};
+    this.syncChecksums(); // baseline; a baseline never fires callbacks
+    this._timer = setInterval(() => this._tickMulti(), 5000);
   },
   stop() {
     if (this._timer) {
       clearInterval(this._timer);
       this._timer = null;
     }
+    this._multi = false;
+  },
+  // Re-baseline checksums after our own writes that bypass saveProject (e.g.
+  // per-project archive saves), so the next poll does not mistake them for
+  // external changes.
+  async syncChecksums() {
+    if (!this._multi) return;
+    try {
+      const projects = await ApiBackend.listProjects();
+      for (const p of projects) this.lastChecksums[p.name] = p.checksum || '';
+    } catch {/* silent on poll errors */}
   },
   async _tick() {
     if (Storage.mode === 'local' || !Storage.backend) return;
@@ -3721,6 +3948,56 @@ const SyncPoller = {
         this._onExternalChange?.('reload', parsed);
       }
     } catch {/* silent on poll errors */}
+  },
+  async _tickMulti() {
+    if (!this._multi) return;
+    let projects;
+    try {
+      projects = await ApiBackend.listProjects();
+    } catch {
+      return;
+    }
+    if (!projects?.length) return;
+    const prev = this.lastChecksums;
+    const known = Object.keys(prev);
+    const names = projects.map(p => p.name);
+    if (known.length > 0 && (names.length !== known.length || names.some(n => !known.includes(n)))) {
+      if (this._isDirty?.()) {
+        // Leave the baseline stale so the next tick retries after the
+        // pending save lands — reloading now would clobber unsaved edits.
+        this._onExternalChange?.('warn', null);
+      } else {
+        this.lastChecksums = Object.fromEntries(projects.map(p => [p.name, p.checksum || '']));
+        this._onExternalChange?.('set-changed', null);
+      }
+      return;
+    }
+    for (const p of projects) {
+      const cs = p.checksum || '';
+      if (!(p.name in prev)) {
+        prev[p.name] = cs;
+        continue;
+      } // baseline a latecomer silently
+      if (!cs || cs === prev[p.name]) continue;
+      prev[p.name] = cs;
+      if (this._isDirty?.()) {
+        // Checksum already stored — the warn fires exactly once per change.
+        this._onExternalChange?.('warn', null);
+      } else {
+        try {
+          const raw = await ApiBackend.loadProject(p.name);
+          const parsed = await Parser.parse(raw.content);
+          walkTree(parsed.entries, e => {
+            e._projectId = p.name;
+          });
+          for (const h of parsed.history) h._projectId = p.name;
+          this._onExternalChange?.('project-reloaded', {
+            name: p.name,
+            parsed
+          });
+        } catch {/* unreadable project — retry on the next checksum change */}
+      }
+    }
   }
 };
 
@@ -5417,7 +5694,10 @@ function ItemDialog({
   initial,
   onClose,
   onSubmit,
-  recentTags = []
+  recentTags = [],
+  isMultiProject = false,
+  projects = [],
+  defaultProjectId = null
 }) {
   const [title, setTitle] = useStateD("");
   const [body, setBody] = useStateD(null);
@@ -5428,7 +5708,13 @@ function ItemDialog({
   const [tagInput, setTagInput] = useStateD("");
   const [reason, setReason] = useStateD("");
   const [progress, setProgress] = useStateD(0);
+  const [createAsProject, setCreateAsProject] = useStateD(false);
+  const [projectPath, setProjectPath] = useStateD("");
+  const [selectedProjectId, setSelectedProjectId] = useStateD(null);
   const titleRef = useRefD(null);
+  const showProjectOption = isMultiProject && mode === "add";
+  const showPathInput = showProjectOption && createAsProject;
+  const showProjectSelect = showProjectOption && !createAsProject && projects.length > 0;
   useEffectD(() => {
     if (!open) return;
     setTitle(initial?.title || "");
@@ -5440,6 +5726,9 @@ function ItemDialog({
     setTagInput("");
     setReason(initial?.reason || "");
     setProgress(initial?.progress ?? 0);
+    setCreateAsProject(false);
+    setProjectPath("");
+    setSelectedProjectId(defaultProjectId && projects.some(p => p.id === defaultProjectId) ? defaultProjectId : projects[0] ? projects[0].id : null);
     setTimeout(() => titleRef.current?.focus(), 50);
   }, [open, initial]);
   const addTag = t => {
@@ -5451,11 +5740,12 @@ function ItemDialog({
   const removeTag = t => setTags(tags.filter(x => x !== t));
   const submit = e => {
     e?.preventDefault();
-    if (!title.trim()) return;
+    // Item type requires a title; Project type only requires a path (title is an optional display name).
+    if (showPathInput ? !projectPath.trim() : !title.trim()) return;
     // Reconcile progress with status before submitting.
     let outProgress = snapProgress(progress);
     if (status === "done") outProgress = 100;
-    onSubmit({
+    const payload = {
       title: title.trim(),
       body: body || null,
       priority,
@@ -5464,7 +5754,14 @@ function ItemDialog({
       tags,
       reason: status === "blocked" ? reason.trim() || null : null,
       progress: outProgress
-    });
+    };
+    if (isMultiProject) {
+      const rawPath = projectPath.trim();
+      payload.createAsProject = showPathInput;
+      payload.projectPath = showPathInput ? rawPath.endsWith('.md') ? rawPath : rawPath.replace(/\/$/, '') + '/backlog.md' : null;
+      payload.projectId = showProjectSelect ? selectedProjectId : null;
+    }
+    onSubmit(payload);
   };
   const tagSuggestions = recentTags.filter(t => !tags.includes(t)).slice(0, 8);
   return /*#__PURE__*/React.createElement(Dialog, {
@@ -5473,7 +5770,13 @@ function ItemDialog({
     width: 520,
     labelledBy: "dlg-item-title"
   }, /*#__PURE__*/React.createElement("form", {
-    onSubmit: submit
+    onSubmit: submit,
+    onKeyDown: e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    }
   }, /*#__PURE__*/React.createElement(DialogHeader, {
     id: "dlg-item-title",
     eyebrow: mode === "view" ? "Archived item" : mode === "edit" ? "Edit item" : mode === "add-child" ? "Add sub-item" : "New item",
@@ -5490,8 +5793,8 @@ function ItemDialog({
     className: "text-input",
     value: title,
     onChange: e => setTitle(e.target.value),
-    placeholder: "What needs to happen?",
-    required: true,
+    placeholder: showPathInput ? "Optional display name" : "What needs to happen?",
+    required: !showPathInput,
     readOnly: mode === "view"
   })), /*#__PURE__*/React.createElement("div", {
     className: "field"
@@ -5604,6 +5907,67 @@ function ItemDialog({
     addTag: addTag,
     removeTag: removeTag,
     allTags: recentTags
+  })), showProjectOption && /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "field-label"
+  }, "Type"), /*#__PURE__*/React.createElement("div", {
+    className: "status-grid",
+    style: {
+      gridTemplateColumns: '1fr 1fr'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: `status-card ${!createAsProject ? 'active' : ''}`,
+    onClick: () => setCreateAsProject(false)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "status-card-icon",
+    style: {
+      background: 'var(--bg-2)'
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "check",
+    size: 16
+  })), /*#__PURE__*/React.createElement("span", {
+    className: "status-card-label"
+  }, "Item")), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: `status-card ${createAsProject ? 'active' : ''}`,
+    onClick: () => setCreateAsProject(true)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "status-card-icon",
+    style: {
+      background: 'var(--bg-2)'
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "folder",
+    size: 16
+  })), /*#__PURE__*/React.createElement("span", {
+    className: "status-card-label"
+  }, "Project")))), showProjectSelect && /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "field-label"
+  }, "Project ", /*#__PURE__*/React.createElement("span", {
+    className: "field-hint"
+  }, "where this item will live")), /*#__PURE__*/React.createElement("select", {
+    className: "text-input",
+    value: selectedProjectId ?? "",
+    onChange: e => setSelectedProjectId(e.target.value)
+  }, projects.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.id,
+    value: p.id
+  }, p.name)))), showPathInput && /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "field-label"
+  }, "File path ", /*#__PURE__*/React.createElement("span", {
+    className: "field-hint"
+  }, "created if missing; backlog.md appended for directories")), /*#__PURE__*/React.createElement("input", {
+    className: "text-input",
+    value: projectPath,
+    onChange: e => setProjectPath(e.target.value),
+    placeholder: "/home/user/project/backlog.md"
   }))), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot"
   }, mode === "view" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
@@ -5625,8 +5989,8 @@ function ItemDialog({
   }, "Cancel"), /*#__PURE__*/React.createElement("button", {
     type: "submit",
     className: "btn-primary",
-    disabled: !title.trim()
-  }, mode === "edit" ? "Save changes" : "Create item"))))));
+    disabled: showPathInput ? !projectPath.trim() : !title.trim()
+  }, mode === "edit" ? "Save changes" : showPathInput ? "Register project" : "Create item"))))));
 }
 
 // --- Confirm dialog ---
@@ -5635,11 +5999,16 @@ function ConfirmDialog({
   title,
   message,
   detail,
+  checkbox,
   confirmLabel = "Confirm",
   danger = false,
   onCancel,
   onConfirm
 }) {
+  const [checked, setChecked] = useStateD(false);
+  useEffectD(() => {
+    if (open) setChecked(false);
+  }, [open]);
   return /*#__PURE__*/React.createElement(Dialog, {
     open: open,
     onClose: onCancel,
@@ -5656,7 +6025,13 @@ function ConfirmDialog({
     className: "dlg-msg"
   }, message), detail && /*#__PURE__*/React.createElement("div", {
     className: "dlg-detail"
-  }, detail)), /*#__PURE__*/React.createElement("div", {
+  }, detail), checkbox && /*#__PURE__*/React.createElement("label", {
+    className: "dlg-checkbox"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: checked,
+    onChange: e => setChecked(e.target.checked)
+  }), /*#__PURE__*/React.createElement("span", null, checkbox))), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot"
   }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("div", {
     className: "dlg-foot-actions"
@@ -5667,9 +6042,72 @@ function ConfirmDialog({
   }, "Cancel"), /*#__PURE__*/React.createElement("button", {
     type: "button",
     className: danger ? "btn-danger" : "btn-primary",
-    onClick: onConfirm,
+    onClick: () => onConfirm(checked),
     autoFocus: true
   }, confirmLabel))));
+}
+
+// --- Prompt dialog (styled input) ---
+function PromptDialog({
+  open,
+  title,
+  message,
+  placeholder = "",
+  confirmLabel = "OK",
+  onCancel,
+  onConfirm
+}) {
+  const [value, setValue] = useStateD("");
+  const inputRef = useRefD(null);
+  useEffectD(() => {
+    if (open) {
+      setValue("");
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [open]);
+  const submit = e => {
+    e?.preventDefault();
+    if (!value.trim()) return;
+    onConfirm(value.trim());
+  };
+  return /*#__PURE__*/React.createElement(Dialog, {
+    open: open,
+    onClose: onCancel,
+    width: 480,
+    labelledBy: "dlg-prompt-title"
+  }, /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit
+  }, /*#__PURE__*/React.createElement(DialogHeader, {
+    id: "dlg-prompt-title",
+    eyebrow: "Input",
+    title: title,
+    onClose: onCancel
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-body"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "dlg-msg"
+  }, message), /*#__PURE__*/React.createElement("input", {
+    ref: inputRef,
+    className: "text-input",
+    value: value,
+    onChange: e => setValue(e.target.value),
+    placeholder: placeholder,
+    style: {
+      marginTop: 12
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-foot"
+  }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-foot-actions"
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn-secondary",
+    onClick: onCancel
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "btn-primary",
+    disabled: !value.trim()
+  }, confirmLabel)))));
 }
 
 // --- Tag autocomplete (typed input + filtered dropdown) ---
@@ -5812,6 +6250,7 @@ function TagMatchHL({
 window.Dialog = Dialog;
 window.ItemDialog = ItemDialog;
 window.ConfirmDialog = ConfirmDialog;
+window.PromptDialog = PromptDialog;
 window.RichTextEditor = RichTextEditor;
 </script>
   <script>
@@ -6494,6 +6933,115 @@ function AppearanceCard({
     }
   }, opt.hint))))));
 }
+
+// ---- Projects card (api mode only, todo 8) ----
+// Registry manager: rows come straight from the server (authoritative size /
+// missing flags). Rename/remove reuse the SAME app-level handlers the backlog
+// sections use, so the ConfirmDialog-with-checkbox and PromptDialog flows have
+// exactly one implementation.
+function ProjectsCard({
+  projects,
+  onRegisterProject,
+  onRenameProject,
+  onRemoveProject
+}) {
+  const propRows = () => (projects || []).map(p => ({
+    name: p.name,
+    path: p.path,
+    size: undefined,
+    missing: !!p.missing
+  }));
+  const [rows, setRows] = useState(propRows);
+  const [regPath, setRegPath] = useState('');
+  const [regName, setRegName] = useState('');
+  const [registering, setRegistering] = useState(false);
+
+  // Re-fetch the registry whenever the app-level project set changes
+  // (register/rename/remove/poller reloads); on failure fall back to the
+  // app's list so the card never blanks out.
+  useEffect(() => {
+    let cancelled = false;
+    ApiBackend.listProjects().then(list => {
+      if (!cancelled && Array.isArray(list)) setRows(list);
+    }).catch(() => {
+      if (!cancelled) setRows(propRows());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
+  const submitRegister = e => {
+    e.preventDefault();
+    const path = regPath.trim();
+    if (!path || registering) return;
+    setRegistering(true);
+    // onRegisterProject returns a promise; the app toasts success/error.
+    Promise.resolve(onRegisterProject(path, regName.trim() || null)).finally(() => {
+      setRegistering(false);
+      setRegPath('');
+      setRegName('');
+    });
+  };
+  return /*#__PURE__*/React.createElement("section", {
+    className: "card span-2"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card-head"
+  }, /*#__PURE__*/React.createElement("h3", null, "Projects"), /*#__PURE__*/React.createElement("span", {
+    className: "card-sub"
+  }, rows.length, " registered \xB7 rename and remove act on the registry, not the file")), /*#__PURE__*/React.createElement("table", {
+    className: "backup-table projects-table"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Name"), /*#__PURE__*/React.createElement("th", null, "Path"), /*#__PURE__*/React.createElement("th", null, "Size"), /*#__PURE__*/React.createElement("th", null, "Status"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, rows.map(r => /*#__PURE__*/React.createElement("tr", {
+    key: r.name
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "mono"
+  }, r.name), /*#__PURE__*/React.createElement("td", {
+    className: "mono projects-path",
+    title: r.path
+  }, r.path), /*#__PURE__*/React.createElement("td", null, typeof r.size === 'number' ? fmtBytes(r.size) : /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "\u2014")), /*#__PURE__*/React.createElement("td", null, r.missing ? /*#__PURE__*/React.createElement("span", {
+    className: "project-missing-badge"
+  }, "missing") : /*#__PURE__*/React.createElement("span", {
+    className: "pill mini ok"
+  }, "\u2713 ok")), /*#__PURE__*/React.createElement("td", {
+    className: "row-actions-cell"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "row-btn",
+    disabled: !!r.missing,
+    onClick: () => onRenameProject(r.name)
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "edit",
+    size: 12
+  }), " Rename"), /*#__PURE__*/React.createElement("button", {
+    className: "row-btn",
+    onClick: () => onRemoveProject(r.name)
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "trash",
+    size: 12
+  }), " Remove")))))), /*#__PURE__*/React.createElement("form", {
+    className: "projects-register",
+    onSubmit: submitRegister
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    className: "projects-input",
+    placeholder: "/path/to/project \u2014 directory or .md file",
+    value: regPath,
+    onChange: e => setRegPath(e.target.value)
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    className: "projects-input projects-input-name",
+    placeholder: "Display name (optional)",
+    value: regName,
+    onChange: e => setRegName(e.target.value)
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn-primary",
+    type: "submit",
+    disabled: !regPath.trim() || registering
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "plus",
+    size: 12
+  }), " Register")));
+}
 function AdminPage({
   data,
   onClose,
@@ -6508,7 +7056,12 @@ function AdminPage({
   archiveData,
   onArchiveItems,
   onRestoreItems,
-  onViewItem
+  onViewItem,
+  storageMode,
+  projects,
+  onRegisterProject,
+  onRenameProject,
+  onRemoveProject
 }) {
   const [previewBackup, setPreviewBackup] = useState(null);
   const counts = countByStatus(data.entries);
@@ -6553,7 +7106,12 @@ function AdminPage({
     className: "mono small"
   }, data.health.backupsPath)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "stats.jsonl"), /*#__PURE__*/React.createElement("dd", null, fmtBytes(data.health.statsSize), " \xB7 90-day rollup")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("dt", null, "Oldest event"), /*#__PURE__*/React.createElement("dd", {
     className: "mono small"
-  }, fmtTimestamp(data.health.historyOldest))))), /*#__PURE__*/React.createElement("section", {
+  }, fmtTimestamp(data.health.historyOldest))))), storageMode === 'api' && /*#__PURE__*/React.createElement(ProjectsCard, {
+    projects: projects,
+    onRegisterProject: onRegisterProject,
+    onRenameProject: onRenameProject,
+    onRemoveProject: onRemoveProject
+  }), /*#__PURE__*/React.createElement("section", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-head"
@@ -6700,7 +7258,8 @@ function AdminPage({
     archiveData: archiveData,
     onArchiveItems: onArchiveItems,
     onRestoreItems: onRestoreItems,
-    onViewItem: onViewItem
+    onViewItem: onViewItem,
+    projects: storageMode === 'api' ? projects : []
   }), /*#__PURE__*/React.createElement("section", {
     className: "card span-3"
   }, /*#__PURE__*/React.createElement("div", {
@@ -6721,22 +7280,41 @@ function AdminPage({
 }
 
 // ---- Archive Manager Card ----
+// In multi-project api mode the card scopes to ONE project (select at the
+// top): both lists and every count reflect the selection. Writes already
+// route per-project in app.jsx (archive/restore group by _projectId), so the
+// select is a read-side filter — restore of an item from project X rewrites
+// only X's backlog.md + archive.md. Single-project mode renders exactly as
+// before (no select).
 function ArchiveCard({
   entries,
   archiveData,
   onArchiveItems,
   onRestoreItems,
-  onViewItem
+  onViewItem,
+  projects = []
 }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [filter, setFilter] = useState('done'); // 'done', 'cancelled', 'all'
   const [searchTerm, setSearchTerm] = useState('');
   const [archiveSearchTerm, setArchiveSearchTerm] = useState('');
   const [expandedArchive, setExpandedArchive] = useState(false);
+  const isMulti = projects.length > 1;
+  const [archivePid, setArchivePid] = useState(projects[0]?.id ?? null);
+
+  // Keep the selection valid across register/rename/remove reloads.
+  useEffect(() => {
+    if (isMulti && !projects.some(p => p.id === archivePid)) {
+      setArchivePid(projects[0]?.id ?? null);
+    }
+  }, [projects]);
+  const pidOf = x => x._projectId ?? projects[0]?.id;
+  const scopedBacklog = isMulti ? entries.filter(e => pidOf(e) === archivePid) : entries;
+  const scopedArchive = isMulti ? (archiveData?.entries || []).filter(e => pidOf(e) === archivePid) : archiveData?.entries || [];
 
   // Find archivable items (done or cancelled)
   const archivableItems = [];
-  walkTree(entries, item => {
+  walkTree(scopedBacklog, item => {
     if (filter === 'all' || item.status === filter) {
       if (item.status === 'done' || item.status === 'cancelled') {
         archivableItems.push(item);
@@ -6748,7 +7326,7 @@ function ArchiveCard({
   const filteredItems = archivableItems.filter(it => !searchTerm || it.title.toLowerCase().includes(searchTerm.toLowerCase()));
 
   // Archive entries
-  const archiveEntries = archiveData?.entries || [];
+  const archiveEntries = scopedArchive;
   const filteredArchiveItems = [];
   walkTree(archiveEntries, item => {
     if (!archiveSearchTerm || item.title.toLowerCase().includes(archiveSearchTerm.toLowerCase())) {
@@ -6771,9 +7349,25 @@ function ArchiveCard({
     className: "card span-3"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-head"
-  }, /*#__PURE__*/React.createElement("h3", null, "Archive manager"), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("h3", null, "Archive manager"), /*#__PURE__*/React.createElement("div", {
+    className: "card-head-right",
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10
+    }
+  }, isMulti && /*#__PURE__*/React.createElement("select", {
+    value: archivePid ?? '',
+    onChange: e => setArchivePid(e.target.value),
+    className: "archive-filter",
+    title: "Archive source project",
+    "aria-label": "Archive source project"
+  }, projects.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.id,
+    value: p.id
+  }, p.name))), /*#__PURE__*/React.createElement("span", {
     className: "card-sub"
-  }, archivableItems.length, " archivable \xB7 ", archiveEntries.length, " archived")), /*#__PURE__*/React.createElement("div", {
+  }, archivableItems.length, " archivable \xB7 ", archiveEntries.length, " archived", isMulti ? ` · ${archivePid}` : ''))), /*#__PURE__*/React.createElement("div", {
     className: "archive-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "archive-toolbar"
@@ -6862,6 +7456,7 @@ function ArchiveCard({
 }
 window.AdminPage = AdminPage;
 window.ArchiveCard = ArchiveCard;
+window.ProjectsCard = ProjectsCard;
 </script>
   <script>
 // Main App — top shell, state management, real storage load/save flow.
@@ -6883,13 +7478,14 @@ function loadLocalState() {
   }
 }
 
-// Only UI state (expanded rows, tweaks) is persisted locally.
+// Only UI state (expanded rows, project section collapse, tweaks) is persisted locally.
 // Backlog data always lives in backlog.md — never in localStorage.
-function saveLocalState(expandedMap, tweaks) {
+function saveLocalState(expandedMap, tweaks, projectExpandedMap = {}) {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify({
       expandedMap,
-      tweaks
+      tweaks,
+      projectExpandedMap
     }));
   } catch {/* quota / private mode */}
 }
@@ -6944,6 +7540,119 @@ function buildEmptyData() {
     backups: []
   };
 }
+
+// Build ONE merged data object from per-project loads (api mode). Every entry
+// and history row is tagged with _projectId; stats derive through the same
+// buildDataFromStorage pipeline as single-project mode. A single registered
+// project degenerates cleanly — the merged model is the ONLY api data path.
+async function buildMergedDataFromProjects(projectsData, {
+  sizeInfo = {},
+  backups = []
+} = {}) {
+  // Parser ids derive from a Date.now() counter, so loadAllProjects' parallel
+  // per-project parses can mint IDENTICAL ids (same-millisecond start).
+  // De-collide deterministically per project — stable across reloads — and
+  // remap that project's history rows to the new id.
+  const seenIds = new Set();
+  const allEntries = [];
+  const taggedHistory = [];
+  for (const proj of projectsData) {
+    walkTree(proj.entries, it => {
+      if (seenIds.has(it.id)) {
+        const nid = `${it.id}~${proj.id}`;
+        for (const h of proj.history) if (h.itemId === it.id) h.itemId = nid;
+        it.id = nid;
+      }
+      seenIds.add(it.id);
+      it._projectId = proj.id;
+    });
+    allEntries.push(...proj.entries);
+    for (const h of proj.history) taggedHistory.push({
+      ...h,
+      _projectId: proj.id
+    });
+  }
+  taggedHistory.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const metas = projectsData.map(p => p.meta).filter(Boolean);
+  const mergedMeta = metas.length ? {
+    saved: metas.map(m => m.saved).filter(Boolean).sort().pop() ?? null,
+    checksum: '—',
+    entryCount: countAll(allEntries),
+    historyCount: taggedHistory.length
+  } : null;
+  const merged = await buildDataFromStorage({
+    entries: allEntries,
+    history: taggedHistory,
+    meta: mergedMeta,
+    checksumOk: projectsData.every(p => p.checksumOk)
+  }, backups, 'api', sizeInfo);
+
+  // Stats above derive from the merged tree; mostActiveProject is the project
+  // with the most entries.
+  let mostActive = '—',
+    maxCount = -1;
+  for (const proj of projectsData) {
+    const n = countAll(proj.entries);
+    if (n > maxCount) {
+      maxCount = n;
+      mostActive = proj.name;
+    }
+  }
+  merged.stats.mostActiveProject = mostActive;
+  return merged;
+}
+
+// Which projects have local changes to persist? An explicit id wins (or an
+// array of ids for cross-project moves); otherwise derive from _projectId tags
+// on entries AND history rows, with untagged rows falling back to the first
+// registered project.
+function computeDirtyProjectIds(data, explicitProjectId, fallbackFirst) {
+  if (Array.isArray(explicitProjectId)) return explicitProjectId.filter(Boolean);
+  if (explicitProjectId) return [explicitProjectId];
+  const ids = new Set();
+  for (const e of data.entries) ids.add(e._projectId ?? fallbackFirst);
+  for (const h of data.history) ids.add(h._projectId ?? fallbackFirst);
+  ids.delete(null);
+  ids.delete(undefined);
+  return [...ids];
+}
+
+// Re-tag a node and all its descendants as belonging to `projectId`.
+// Used by cross-project drag&drop (todo 6 drop zones) and project rename.
+function retagSubtree(node, projectId) {
+  walkTree([node], it => {
+    it._projectId = projectId;
+  });
+}
+
+// Disk counterpart of the in-memory de-collision in buildMergedDataFromProjects:
+// strip the merge-only `~<projectId>` suffix from entry ids, history itemIds and
+// restore-path segments of THIS project's subset before serializing, so every
+// project file stays a standard upstream backlog.md (upstream ids never contain
+// `~`). Only an exact `~<projectId>` ending is stripped — other projects'
+// suffixes or natural `~` pass through untouched. PURE: the in-memory tree keeps
+// its suffixed ids for de-collision; deep-safe copies are returned.
+function toDiskIds(entries, history, projectId) {
+  if (!projectId) return {
+    entries,
+    history
+  };
+  const suffix = '~' + projectId;
+  const strip = id => typeof id === 'string' && id.endsWith(suffix) ? id.slice(0, id.length - suffix.length) : id;
+  const mapEntry = it => ({
+    ...it,
+    id: strip(it.id),
+    restorePath: typeof it.restorePath === 'string' && it.restorePath ? it.restorePath.split('/').map(strip).join('/') : it.restorePath,
+    children: it.children ? it.children.map(mapEntry) : it.children
+  });
+  return {
+    entries: entries.map(mapEntry),
+    history: history.map(h => ({
+      ...h,
+      itemId: strip(h.itemId)
+    }))
+  };
+}
 function App() {
   const [data, setData] = useStateMain(buildEmptyData);
   const [storageMode, setStorageMode] = useStateMain('local'); // 'api' | 'direct' | 'local'
@@ -6972,6 +7681,10 @@ function App() {
     entries: [],
     history: []
   });
+  const [projects, setProjects] = useStateMain([]);
+  const [projectExpandedMap, setProjectExpandedMap] = useStateMain(() => loadLocalState()?.projectExpandedMap ?? {});
+  const [prompt, setPrompt] = useStateMain(null); // PromptDialog state {title, message, placeholder, onConfirm}
+
   const TWEAK_DEFAULTS = {
     accent_hue: 35,
     density: 'comfortable',
@@ -6989,6 +7702,8 @@ function App() {
   // Refs for async callbacks that need latest state without stale closures.
   const latestData = useRefMain(data);
   const latestExpandedMap = useRefMain(expandedMap);
+  const latestProjects = useRefMain(projects);
+  const latestProjectExpandedMap = useRefMain(projectExpandedMap);
   const isDirtyRef = useRefMain(false);
   const saveTimerRef = useRefMain(null);
   useEffectMain(() => {
@@ -6997,6 +7712,12 @@ function App() {
   useEffectMain(() => {
     latestExpandedMap.current = expandedMap;
   }, [expandedMap]);
+  useEffectMain(() => {
+    latestProjects.current = projects;
+  }, [projects]);
+  useEffectMain(() => {
+    latestProjectExpandedMap.current = projectExpandedMap;
+  }, [projectExpandedMap]);
   useEffectMain(() => {
     document.documentElement.style.setProperty('--accent-hue', tweaks.accent_hue);
     document.documentElement.dataset.density = tweaks.density;
@@ -7014,6 +7735,87 @@ function App() {
     mq.addEventListener('change', apply);
     return () => mq.removeEventListener('change', apply);
   }, [tweaks.theme]);
+
+  // ---- Multi-project loading (api mode) ----
+  // Full reload of every registered project + merged data rebuild. Used by
+  // init, 'set-changed' polls, restores, and the admin flows (todos 6-8).
+  const reloadProjects = async ({
+    seedExpanded = false
+  } = {}) => {
+    const [projs, sizeInfo, backups] = await Promise.all([ApiBackend.loadAllProjects(), Storage.getHealthInfo(), Storage.listBackups()]);
+    const newData = await buildMergedDataFromProjects(projs, {
+      sizeInfo,
+      backups
+    });
+    latestProjects.current = projs;
+    setProjects(projs);
+    setData(newData);
+    if (seedExpanded && !loadLocalState()?.expandedMap) {
+      const em = {};
+      walkTree(newData.entries, it => {
+        em[it.id] = !it.collapsed;
+      });
+      setExpandedMap(em);
+    }
+    return {
+      data: newData,
+      projects: projs
+    };
+  };
+
+  // SyncPoller callback for multi-project polling (api mode).
+  const handleExternalChangeMulti = async (kind, payload) => {
+    if (kind === 'warn') {
+      showToast('File changed externally — you have unsaved edits', 'warn');
+    } else if (kind === 'set-changed') {
+      try {
+        await reloadProjects({
+          seedExpanded: false
+        });
+        showToast('Projects changed on server — reloaded');
+      } catch (e) {
+        console.error('Project set reload failed:', e); // keep current state; next poll retries
+      }
+    } else if (kind === 'project-reloaded' && payload) {
+      const {
+        name,
+        parsed
+      } = payload;
+      const cur = latestProjects.current;
+      const idx = cur.findIndex(p => p.id === name);
+      if (idx === -1) return; // unknown project — a set-changed poll will pick it up
+      const newProjs = cur.map(p => p.id === name ? {
+        ...p,
+        entries: parsed.entries,
+        history: parsed.history,
+        meta: parsed.meta,
+        checksumOk: parsed.checksumOk,
+        missing: false,
+        error: null
+      } : p);
+      latestProjects.current = newProjs;
+      setProjects(newProjs);
+      const merged = await buildMergedDataFromProjects(newProjs, {
+        sizeInfo: latestData.current.health,
+        backups: latestData.current.backups
+      });
+      setData(merged);
+      showToast(`Reloaded ${name}`);
+    }
+  };
+
+  // Register a project and refresh every derived piece of state. Shared by
+  // the ItemDialog "Project" type (todo 7) and the admin Projects card
+  // register form (todo 8) — one implementation, two callers.
+  const registerProjectAndRefresh = async (path, name = null) => {
+    const result = await ApiBackend.registerProject(path, name);
+    if (!result.ok) throw new Error(result.error || 'Register failed');
+    await reloadProjects({
+      seedExpanded: false
+    });
+    await SyncPoller.syncChecksums();
+    return result;
+  };
 
   // ---- Storage initialisation (runs once on mount) ----
   useEffectMain(() => {
@@ -7044,7 +7846,11 @@ function App() {
         // API mode needs no init — server is already running.
 
         if (cancelled) return;
-        await applyStorageData(mode, () => cancelled);
+        if (mode === 'api') {
+          await applyProjectsData(() => cancelled);
+        } else {
+          await applyStorageData(mode, () => cancelled);
+        }
       } catch (e) {
         if (cancelled) return;
         setStorageMode('local');
@@ -7052,6 +7858,24 @@ function App() {
       } finally {
         if (!cancelled) setIsLoading(false);
       }
+    }
+    async function applyProjectsData(isCancelled) {
+      const {
+        data: newData,
+        projects: projs
+      } = await reloadProjects({
+        seedExpanded: true
+      });
+      if (isCancelled?.()) return;
+      const saved = loadLocalState();
+      const pem = {};
+      for (const p of projs) pem[p.id] = saved?.projectExpandedMap?.[p.id] ?? true;
+      setProjectExpandedMap(pem);
+      if (projs.some(p => !p.checksumOk && p.meta)) setShowWarning(true);
+      SyncPoller.startMulti({
+        isDirty: () => isDirtyRef.current,
+        onExternalChange: handleExternalChangeMulti
+      });
     }
     async function applyStorageData(mode, isCancelled) {
       const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getHealthInfo()]);
@@ -7091,8 +7915,8 @@ function App() {
 
   // Persist expanded/collapsed row state and tweaks locally. Data itself lives in backlog.md.
   useEffectMain(() => {
-    saveLocalState(latestExpandedMap.current, tweaks);
-  }, [expandedMap, tweaks]);
+    saveLocalState(latestExpandedMap.current, tweaks, latestProjectExpandedMap.current);
+  }, [expandedMap, projectExpandedMap, tweaks]);
   const showToast = (msg, kind = 'ok') => {
     setToast({
       msg,
@@ -7138,7 +7962,9 @@ function App() {
   };
 
   // ---- Real async save ----
-  const triggerSave = label => {
+  // projectId (string or array) restricts the save to that project(s);
+  // omitted = derive the dirty set from _projectId tags.
+  const triggerSave = (label, projectId = null) => {
     isDirtyRef.current = true;
     setSaveState(prev => ({
       ...prev,
@@ -7149,7 +7975,20 @@ function App() {
       const d = latestData.current;
       const em = latestExpandedMap.current;
       try {
-        if (Storage.isConnected()) {
+        if (Storage.mode === 'api') {
+          // Unified api save path: serialize every DIRTY project separately.
+          // A single registered project is the same loop with one element.
+          const fallbackFirst = latestProjects.current[0]?.id ?? null;
+          const dirtyIds = computeDirtyProjectIds(d, projectId, fallbackFirst);
+          for (const pId of dirtyIds) {
+            const projectEntries = d.entries.filter(e => (e._projectId ?? fallbackFirst) === pId);
+            const projectHistory = d.history.filter(h => (h._projectId ?? fallbackFirst) === pId);
+            const content = await Parser.serialize(toDiskIds(projectEntries, projectHistory, pId));
+            const result = await ApiBackend.saveProject(pId, content);
+            // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
+            if (result?.checksum) SyncPoller.lastChecksums[pId] = result.checksum;
+          }
+        } else if (Storage.isConnected()) {
           const content = await Parser.serialize({
             entries: d.entries,
             history: d.history
@@ -7159,7 +7998,7 @@ function App() {
           const cm = content.match(/checksum:\s*(sha256:[a-f0-9]+)/);
           if (cm) SyncPoller.lastChecksum = cm[1];
         }
-        saveLocalState(em, tweaks);
+        saveLocalState(em, tweaks, latestProjectExpandedMap.current);
         isDirtyRef.current = false;
         const now = new Date().toISOString();
         setSaveState({
@@ -7219,37 +8058,44 @@ function App() {
   // ---- Mutations ----
   const onMutate = {
     setStatus: (id, status) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it || it.status === status) return;
-        d.history.unshift({
+        const histEntry = {
           timestamp: new Date().toISOString(),
           itemId: id,
           action: 'status_changed',
           details: `${it.status} → ${status}`
-        });
+        };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
         const wasDone = it.status === 'done';
         it.status = status;
         if (status !== 'blocked') it.reason = null;
         if (status === 'done') it.progress = 100;else if (wasDone && (it.progress ?? 0) >= 100) it.progress = 75;
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
     setPriority: (id, priority) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it || it.priority === priority) return;
-        d.history.unshift({
+        const histEntry = {
           timestamp: new Date().toISOString(),
           itemId: id,
           action: 'priority_changed',
           details: `${it.priority} → ${priority}`
-        });
+        };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
         it.priority = priority;
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
     setProgress: (id, progress) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const it = findItem(d.entries, id);
         if (!it) return;
@@ -7257,16 +8103,19 @@ function App() {
         if ((it.progress ?? 0) === v) return;
         const before = it.progress ?? 0;
         it.progress = v;
-        d.history.unshift({
+        const histEntry = {
           timestamp: new Date().toISOString(),
           itemId: id,
           action: 'progress_changed',
           details: `${before}% → ${v}%`
-        });
+        };
+        if (it._projectId) histEntry._projectId = it._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
     moveWithinPriority: (id, dir) => {
+      const item = findItem(data.entries, id);
       mutate(d => {
         const r = findParentList(d.entries, id);
         if (!r) return;
@@ -7277,16 +8126,19 @@ function App() {
         while (j >= 0 && j < r.list.length && r.list[j].priority !== me.priority) j += dir;
         if (j < 0 || j >= r.list.length) return;
         [r.list[i], r.list[j]] = [r.list[j], r.list[i]];
-        d.history.unshift({
+        const histEntry = {
           timestamp: new Date().toISOString(),
           itemId: id,
           action: 'item_reordered',
           details: `moved ${dir < 0 ? 'up' : 'down'}`
-        });
+        };
+        if (me._projectId) histEntry._projectId = me._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave();
+      triggerSave(null, item?._projectId);
     },
     reorder: (draggedId, targetId) => {
+      const item = findItem(data.entries, draggedId);
       mutate(d => {
         const src = findParentList(d.entries, draggedId);
         const tgt = findParentList(d.entries, targetId);
@@ -7296,24 +8148,57 @@ function App() {
         src.list.splice(draggedIdx, 1);
         const newTargetIdx = tgt.list.findIndex(x => x.id === targetId);
         tgt.list.splice(newTargetIdx, 0, dragged);
-        d.history.unshift({
+        const histEntry = {
           timestamp: new Date().toISOString(),
           itemId: draggedId,
           action: 'item_reordered',
           details: `dropped before ${targetId}`
-        });
+        };
+        if (dragged._projectId) histEntry._projectId = dragged._projectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave('Reordered');
+      triggerSave('Reordered', item?._projectId);
+    },
+    // Cross-project drag&drop (todo 6 section drop zones call this): move the
+    // node to the destination project's root, re-tagging the whole subtree.
+    // Both source and destination files change, so both are saved.
+    moveToProject: (draggedId, projectId) => {
+      const dragged = findItem(data.entries, draggedId);
+      if (!dragged || !projectId || dragged._projectId === projectId) return;
+      const srcProjectId = dragged._projectId ?? latestProjects.current[0]?.id ?? null;
+      mutate(d => {
+        const r = findParentList(d.entries, draggedId);
+        if (!r) return;
+        const i = r.list.findIndex(x => x.id === draggedId);
+        if (i < 0) return;
+        const [node] = r.list.splice(i, 1);
+        retagSubtree(node, projectId);
+        (function setLevel(it, lv) {
+          it.level = lv;
+          (it.children || []).forEach(c => setLevel(c, lv + 1));
+        })(node, 1);
+        d.entries.push(node);
+        const histEntry = {
+          timestamp: new Date().toISOString(),
+          itemId: draggedId,
+          action: 'item_reordered',
+          details: `moved to project ${projectId}`
+        };
+        histEntry._projectId = projectId;
+        d.history.unshift(histEntry);
+      });
+      triggerSave('Moved', [srcProjectId, projectId]);
     },
     addChild: parentId => setItemDialog({
       mode: 'add-child',
       parentId,
       initial: null
     }),
-    addRoot: () => setItemDialog({
+    addRoot: (projectId = null) => setItemDialog({
       mode: 'add',
       parentId: null,
-      initial: null
+      initial: null,
+      projectId
     }),
     editItem: id => {
       const it = findItem(data.entries, id);
@@ -7332,6 +8217,7 @@ function App() {
         walkTree([it], () => n++);
         return n - 1;
       })();
+      const projectId = it._projectId ?? null;
       setConfirm({
         title: 'Delete this item?',
         message: /*#__PURE__*/React.createElement(React.Fragment, null, "Delete ", /*#__PURE__*/React.createElement("strong", null, it.title), childCount > 0 ? ` and ${childCount} sub-item${childCount > 1 ? 's' : ''}` : '', "?"),
@@ -7352,21 +8238,39 @@ function App() {
               return false;
             }
             remove(d.entries);
-            d.history.unshift({
+            const histEntry = {
               timestamp: new Date().toISOString(),
               itemId: id,
               action: 'item_deleted',
               details: `final: ${it.status}`
-            });
+            };
+            if (projectId) histEntry._projectId = projectId;
+            d.history.unshift(histEntry);
           });
           setConfirm(null);
-          triggerSave('Deleted');
+          triggerSave('Deleted', projectId);
         }
       });
     }
   };
+
+  // Which project does a NEW item belong to? An explicit hint (dialog select
+  // or section context — todos 6-7) wins; otherwise the first registered
+  // project. Non-api modes have no projects → null → item stays untagged.
+  const resolveTargetProjectId = (hint = null) => {
+    if (hint) return hint;
+    const first = latestProjects.current[0];
+    return first ? first.id : null;
+  };
   const submitItemDialog = vals => {
+    if (vals.createAsProject && vals.projectPath) {
+      const path = vals.projectPath;
+      setItemDialog(null);
+      registerProjectAndRefresh(path, vals.title || null).then(result => showToast(`Project registered: ${result.name}`)).catch(e => showToast('Register failed: ' + e.message, 'err'));
+      return;
+    }
     if (itemDialog.mode === 'edit') {
+      const editedItem = findItem(data.entries, itemDialog.itemId);
       mutate(d => {
         const x = findItem(d.entries, itemDialog.itemId);
         if (!x) return;
@@ -7375,22 +8279,32 @@ function App() {
           status: x.status
         };
         Object.assign(x, vals);
-        if (before.status !== vals.status) d.history.unshift({
-          timestamp: new Date().toISOString(),
-          itemId: x.id,
-          action: 'status_changed',
-          details: `${before.status} → ${vals.status}`
-        });
-        if (before.priority !== vals.priority) d.history.unshift({
-          timestamp: new Date().toISOString(),
-          itemId: x.id,
-          action: 'priority_changed',
-          details: `${before.priority} → ${vals.priority}`
-        });
+        if (before.status !== vals.status) {
+          const histEntry = {
+            timestamp: new Date().toISOString(),
+            itemId: x.id,
+            action: 'status_changed',
+            details: `${before.status} → ${vals.status}`
+          };
+          if (x._projectId) histEntry._projectId = x._projectId;
+          d.history.unshift(histEntry);
+        }
+        if (before.priority !== vals.priority) {
+          const histEntry = {
+            timestamp: new Date().toISOString(),
+            itemId: x.id,
+            action: 'priority_changed',
+            details: `${before.priority} → ${vals.priority}`
+          };
+          if (x._projectId) histEntry._projectId = x._projectId;
+          d.history.unshift(histEntry);
+        }
       });
-      triggerSave('Saved');
+      triggerSave('Saved', editedItem?._projectId);
     } else {
       const newId = 'n-' + Math.random().toString(36).slice(2, 8);
+      const parentForTarget = itemDialog.mode === 'add-child' && itemDialog.parentId ? findItem(data.entries, itemDialog.parentId) : null;
+      const targetProjectId = resolveTargetProjectId(vals.projectId || itemDialog.projectId || parentForTarget?._projectId || null);
       mutate(d => {
         const node = {
           id: newId,
@@ -7399,7 +8313,8 @@ function App() {
           children: [],
           collapsed: false
         };
-        if (itemDialog.mode === 'add-child' && itemDialog.parentId) {
+        if (targetProjectId) node._projectId = targetProjectId;
+        if (parentForTarget) {
           const parent = findItem(d.entries, itemDialog.parentId);
           if (parent) {
             parent.children = parent.children || [];
@@ -7413,14 +8328,16 @@ function App() {
         } else {
           d.entries.push(node);
         }
-        d.history.unshift({
+        const histEntry = {
           timestamp: new Date().toISOString(),
           itemId: newId,
           action: 'item_created',
           details: vals.title
-        });
+        };
+        if (targetProjectId) histEntry._projectId = targetProjectId;
+        d.history.unshift(histEntry);
       });
-      triggerSave('Added');
+      triggerSave('Added', targetProjectId);
     }
     setItemDialog(null);
   };
@@ -7428,6 +8345,122 @@ function App() {
     ...m,
     [id]: val
   }));
+
+  // ---- Project section actions (multi-project api mode, todo 6) ----
+  const toggleProjectExpanded = projectId => {
+    setProjectExpandedMap(m => {
+      const isExpanded = m[projectId] !== false;
+      return {
+        ...m,
+        [projectId]: !isExpanded
+      };
+    });
+  };
+
+  // Cross-project drag&drop: tree rows only accept drops from their OWN tree
+  // (draggedId is local state per BacklogTree), so a drag that lands anywhere
+  // else in a section falls through to this drop zone. The dragged id travels
+  // in the text/plain payload set by the row's dragstart.
+  const sectionDragOver = e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    e.currentTarget.classList.add('drop-target');
+  };
+  const sectionDragLeave = e => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.remove('drop-target');
+  };
+  const handleSectionDrop = (e, projectId) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drop-target');
+    let draggedId = null;
+    try {
+      draggedId = e.dataTransfer.getData('text/plain') || null;
+    } catch {
+      draggedId = null;
+    } // protected drag data — nothing sensible to move
+    if (!draggedId) return;
+    const dragged = findItem(data.entries, draggedId);
+    if (!dragged) return;
+    const fromId = dragged._projectId ?? latestProjects.current[0]?.id;
+    if (fromId === projectId) return; // intra-project drops stay the tree's own reorder
+    onMutate.moveToProject(draggedId, projectId);
+  };
+  const handleRenameProject = projectId => {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+    setPrompt({
+      title: 'Rename project',
+      message: /*#__PURE__*/React.createElement(React.Fragment, null, "New name for ", /*#__PURE__*/React.createElement("strong", null, proj.name), "?"),
+      placeholder: proj.name,
+      confirmLabel: 'Rename',
+      onConfirm: async newName => {
+        if (!newName || newName === proj.name) return;
+        try {
+          const result = await ApiBackend.renameProject(projectId, newName);
+          if (!result.ok) throw new Error(result.error || 'Rename failed');
+          setProjectExpandedMap(prev => {
+            const next = {
+              ...prev
+            };
+            const was = next[projectId] ?? true;
+            delete next[projectId];
+            next[result.name] = was;
+            return next;
+          });
+          await reloadProjects({
+            seedExpanded: false
+          });
+          await SyncPoller.syncChecksums();
+          showToast(`Renamed to ${result.name}`);
+        } catch (e) {
+          showToast('Rename failed: ' + e.message, 'err');
+        }
+      }
+    });
+  };
+  const handleRemoveProject = projectId => {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+    const itemCount = countAll(proj.entries);
+    setConfirm({
+      title: 'Delete project?',
+      message: /*#__PURE__*/React.createElement(React.Fragment, null, "Delete ", /*#__PURE__*/React.createElement("strong", null, proj.name), " from the registry?"),
+      detail: /*#__PURE__*/React.createElement("span", {
+        className: "muted"
+      }, `The file contains ${itemCount} item${itemCount !== 1 ? 's' : ''}. `, "Unregistering keeps the file on disk."),
+      checkbox: 'Also delete the file from disk',
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async deleteFromDisk => {
+        const del = deleteFromDisk === true;
+        setConfirm(null);
+        try {
+          const result = await ApiBackend.unregisterProject(projectId, del);
+          if (!result.ok) throw new Error(result.error || 'Delete failed');
+          // Optimistic removal of every trace — a partial clean would resurrect
+          // the section on the next reloadProjects.
+          latestProjects.current = latestProjects.current.filter(p => p.id !== projectId);
+          setProjects(prev => prev.filter(p => p.id !== projectId));
+          setData(prev => ({
+            ...prev,
+            entries: prev.entries.filter(e => e._projectId !== projectId),
+            history: prev.history.filter(h => h._projectId !== projectId)
+          }));
+          setProjectExpandedMap(prev => {
+            const n = {
+              ...prev
+            };
+            delete n[projectId];
+            return n;
+          });
+          await SyncPoller.syncChecksums();
+          showToast(result.warning ? `Removed ${proj.name} — file not deleted: ${result.warning}` : del ? `Deleted from disk: ${proj.name}` : `Removed: ${proj.name}`);
+        } catch (e) {
+          showToast('Delete failed: ' + e.message, 'err');
+        }
+      }
+    });
+  };
   const tagsList = useMemoMain(() => allTags(data.entries), [data]);
   const counts = useMemoMain(() => countByStatus(data.entries), [data]);
   const filtered = useMemoMain(() => {
@@ -7508,11 +8541,19 @@ function App() {
           if (Storage.isConnected()) {
             const result = await Storage.restoreBackup(b.name);
             if (!result.ok) throw new Error(result.error || 'Restore failed');
-            const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getHealthInfo()]);
-            const parsed = await Parser.parse(raw?.content || '');
-            const newData = await buildDataFromStorage(parsed, backups, storageMode, sizeInfo);
-            setData(newData);
-            SyncPoller.lastChecksum = parsed.meta?.checksum || '';
+            if (Storage.mode === 'api') {
+              // The legacy backup route restored the default project — refresh everything.
+              await reloadProjects({
+                seedExpanded: false
+              });
+              await SyncPoller.syncChecksums();
+            } else {
+              const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getHealthInfo()]);
+              const parsed = await Parser.parse(raw?.content || '');
+              const newData = await buildDataFromStorage(parsed, backups, storageMode, sizeInfo);
+              setData(newData);
+              SyncPoller.lastChecksum = parsed.meta?.checksum || '';
+            }
             isDirtyRef.current = false;
           }
           showToast(`Restored from ${b.name.slice(0, 28)}…`);
@@ -7526,32 +8567,99 @@ function App() {
   // ---- Import entries from parsed content ----
   const handleImport = ({
     entries,
-    history
+    history,
+    targetProjectId
   }) => {
+    // Multi-project target (todo 8): the dialog's "Target project" select
+    // routes the file into ONE project. Its backlog.md is written directly
+    // (merge-only id suffixes stripped via toDiskIds), other projects'
+    // files are untouched, then everything reloads from the server.
+    if (Storage.mode === 'api' && targetProjectId) {
+      if (!entries.length && !(history || []).length) {
+        showToast('Import failed: no entries found in file', 'err');
+        return;
+      }
+      (async () => {
+        try {
+          const content = await Parser.serialize(toDiskIds(entries, history || [], targetProjectId));
+          const result = await ApiBackend.saveProject(targetProjectId, content);
+          if (!result.ok) throw new Error(result.error || 'Import failed');
+          if (result.checksum) SyncPoller.lastChecksums[targetProjectId] = result.checksum;
+          setImportExportOpen(false);
+          await reloadProjects({
+            seedExpanded: false
+          });
+          await SyncPoller.syncChecksums();
+          showToast(`Imported into ${targetProjectId}`);
+        } catch (e) {
+          showToast('Import failed: ' + e.message, 'err');
+        }
+      })();
+      return;
+    }
+    // Single-project path: imported rows land in the first project (api
+    // mode with one registered project) or in the single backlog file.
+    const pid = Storage.mode === 'api' ? resolveTargetProjectId() : null;
     mutate(d => {
+      if (pid) {
+        for (const e of entries) e._projectId = pid;
+      }
       d.entries = entries;
-      if (history?.length) d.history = [...history, ...d.history];
-      d.history.unshift({
+      if (history?.length) d.history = [...history.map(h => pid ? {
+        ...h,
+        _projectId: pid
+      } : h), ...d.history];
+      const histEntry = {
         timestamp: new Date().toISOString(),
         itemId: 'system',
         action: 'imported',
         details: `${entries.length} top-level entries`
-      });
+      };
+      if (pid) histEntry._projectId = pid;
+      d.history.unshift(histEntry);
     });
     setImportExportOpen(false);
-    triggerSave('Imported');
+    triggerSave('Imported', pid);
   };
 
   // ---- Archive functions ----
   const loadArchive = async () => {
     try {
-      const raw = await Storage.loadArchive();
-      if (raw.exists && raw.content) {
-        const parsed = await Parser.parse(raw.content);
-        setArchiveData({
-          entries: parsed.entries || [],
-          history: parsed.history || []
+      if (Storage.mode === 'api') {
+        // Each project has its own archive.md — merge them, tagged per project.
+        const projs = latestProjects.current;
+        const parsedAll = await Promise.all(projs.map(async p => {
+          try {
+            const raw = await ApiBackend.loadArchive(p.id);
+            if (raw.exists && raw.content) return await Parser.parse(raw.content);
+          } catch (e) {
+            console.error(`Failed to load archive for ${p.id}:`, e);
+          }
+          return {
+            entries: [],
+            history: []
+          };
+        }));
+        const entries = [],
+          history = [];
+        projs.forEach((p, i) => {
+          for (const e of parsedAll[i].entries) e._projectId = p.id;
+          entries.push(...parsedAll[i].entries);
+          history.push(...parsedAll[i].history);
         });
+        setArchiveData({
+          entries,
+          history
+        });
+      } else {
+        const raw = await Storage.loadArchive();
+        if (raw.exists && raw.content) {
+          const parsed = await Parser.parse(raw.content);
+          setArchiveData({
+            entries: parsed.entries || [],
+            history: parsed.history || []
+          });
+        }
       }
     } catch (e) {
       console.error('Failed to load archive:', e);
@@ -7584,33 +8692,79 @@ function App() {
       entries: newEntries
     } = removeItems([...data.entries], itemIds);
 
-    // Add to archive
-    const newArchiveEntries = [...archiveData.entries, ...toArchive];
-
     // Add history entries
     const newHistory = [...data.history];
     for (const item of toArchive) {
-      newHistory.unshift({
+      const histEntry = {
         timestamp: new Date().toISOString(),
         itemId: item.id,
         action: 'item_archived',
         details: `moved to archive.md`
-      });
+      };
+      if (item._projectId) histEntry._projectId = item._projectId;
+      newHistory.unshift(histEntry);
     }
-    try {
-      // Serialize both files
-      const backlogContent = await Parser.serialize({
-        entries: newEntries,
-        history: newHistory
-      });
-      const archiveContent = await Parser.serialize({
-        entries: newArchiveEntries,
-        history: archiveData.history
-      });
 
-      // Save both atomically
-      const result = await Storage.saveArchive(backlogContent, archiveContent);
-      if (!result.ok) throw new Error('Archive failed');
+    // Add to archive
+    const newArchiveEntries = [...archiveData.entries, ...toArchive];
+    try {
+      if (Storage.mode === 'api') {
+        // Per-project archive: group the batch by _projectId, then for each
+        // affected project write its remaining backlog + its own archive.
+        const fallbackFirst = latestProjects.current[0]?.id ?? null;
+        const pidOf = x => x._projectId ?? fallbackFirst;
+        const groups = new Map();
+        for (const item of toArchive) {
+          const pid = pidOf(item);
+          if (!groups.has(pid)) groups.set(pid, []);
+          groups.get(pid).push(item);
+        }
+        const existing = await Promise.all([...groups.keys()].map(async pid => {
+          try {
+            const raw = await ApiBackend.loadArchive(pid);
+            if (raw.exists && raw.content) {
+              const parsed = await Parser.parse(raw.content);
+              return {
+                pid,
+                entries: parsed.entries || [],
+                history: parsed.history || []
+              };
+            }
+          } catch (e) {
+            console.error(`Failed to load archive for ${pid}:`, e);
+          }
+          return {
+            pid,
+            entries: [],
+            history: []
+          };
+        }));
+        for (const {
+          pid,
+          entries: archEntries,
+          history: archHistory
+        } of existing) {
+          const backlogContent = await Parser.serialize(toDiskIds(newEntries.filter(e => pidOf(e) === pid), newHistory.filter(h => pidOf(h) === pid), pid));
+          const archiveContent = await Parser.serialize(toDiskIds([...archEntries, ...groups.get(pid)], archHistory, pid));
+          const result = await ApiBackend.saveArchive(backlogContent, archiveContent, pid);
+          if (!result.ok) throw new Error('Archive failed');
+        }
+        await SyncPoller.syncChecksums();
+      } else {
+        // Serialize both files
+        const backlogContent = await Parser.serialize({
+          entries: newEntries,
+          history: newHistory
+        });
+        const archiveContent = await Parser.serialize({
+          entries: newArchiveEntries,
+          history: archiveData.history
+        });
+
+        // Save both atomically
+        const result = await Storage.saveArchive(backlogContent, archiveContent);
+        if (!result.ok) throw new Error('Archive failed');
+      }
 
       // Update local state
       setData(d => ({
@@ -7618,10 +8772,14 @@ function App() {
         entries: newEntries,
         history: newHistory
       }));
-      setArchiveData({
-        entries: newArchiveEntries,
-        history: archiveData.history
-      });
+      if (Storage.mode === 'api') {
+        await loadArchive(); // refresh the merged per-project archive view from disk
+      } else {
+        setArchiveData({
+          entries: newArchiveEntries,
+          history: archiveData.history
+        });
+      }
       isDirtyRef.current = false;
       showToast(`Archived ${toArchive.length} item${toArchive.length > 1 ? 's' : ''}`);
     } catch (e) {
@@ -7660,27 +8818,43 @@ function App() {
     // Add history entries
     const newHistory = [...data.history];
     for (const item of toRestore) {
-      newHistory.unshift({
+      const histEntry = {
         timestamp: new Date().toISOString(),
         itemId: item.id,
         action: 'item_restored',
         details: `restored from archive`
-      });
+      };
+      if (item._projectId) histEntry._projectId = item._projectId;
+      newHistory.unshift(histEntry);
     }
     try {
-      // Serialize both files
-      const backlogContent = await Parser.serialize({
-        entries: newEntries,
-        history: newHistory
-      });
-      const archiveContent = await Parser.serialize({
-        entries: remainingArchive,
-        history: archiveData.history
-      });
+      if (Storage.mode === 'api') {
+        // Mirror of the archive flow per project: only projects whose items
+        // were restored get their backlog + archive rewritten.
+        const fallbackFirst = latestProjects.current[0]?.id ?? null;
+        const pidOf = x => x._projectId ?? fallbackFirst;
+        for (const pid of [...new Set(toRestore.map(pidOf))]) {
+          const backlogContent = await Parser.serialize(toDiskIds(newEntries.filter(e => pidOf(e) === pid), newHistory.filter(h => pidOf(h) === pid), pid));
+          const archiveContent = await Parser.serialize(toDiskIds(remainingArchive.filter(e => pidOf(e) === pid), [], pid));
+          const result = await ApiBackend.restoreFromArchive(backlogContent, archiveContent, pid);
+          if (!result.ok) throw new Error('Restore failed');
+        }
+        await SyncPoller.syncChecksums();
+      } else {
+        // Serialize both files
+        const backlogContent = await Parser.serialize({
+          entries: newEntries,
+          history: newHistory
+        });
+        const archiveContent = await Parser.serialize({
+          entries: remainingArchive,
+          history: archiveData.history
+        });
 
-      // Save both atomically
-      const result = await Storage.restoreFromArchive(backlogContent, archiveContent);
-      if (!result.ok) throw new Error('Restore failed');
+        // Save both atomically
+        const result = await Storage.restoreFromArchive(backlogContent, archiveContent);
+        if (!result.ok) throw new Error('Restore failed');
+      }
 
       // Update local state
       setData(d => ({
@@ -7688,10 +8862,14 @@ function App() {
         entries: newEntries,
         history: newHistory
       }));
-      setArchiveData({
-        entries: remainingArchive,
-        history: archiveData.history
-      });
+      if (Storage.mode === 'api') {
+        await loadArchive(); // refresh the merged per-project archive view from disk
+      } else {
+        setArchiveData({
+          entries: remainingArchive,
+          history: archiveData.history
+        });
+      }
       isDirtyRef.current = false;
       let msg = `Restored ${toRestore.length} item${toRestore.length > 1 ? 's' : ''}`;
       if (warnings.length) msg += ` (${warnings.length} to root - parent not found)`;
@@ -7702,6 +8880,8 @@ function App() {
   };
   const saveLabel = saveState.status === 'saving' ? 'Saving…' : saveState.status === 'error' ? 'Save failed' : `Saved · ${fmtTimestamp(saveState.lastSaved)}`;
   const hasFilters = filters.text || filters.statuses?.length || filters.priorities?.length || filters.tags?.length || filters.dueRange;
+  const isMulti = projects.length > 1; // UI gating only — the merged model is the single data path
+
   if (isLoading) {
     return /*#__PURE__*/React.createElement("div", {
       className: "app",
@@ -7839,7 +9019,85 @@ function App() {
     className: "legend-hint"
   }, tweaks.sort_mode === 'manual' ? /*#__PURE__*/React.createElement(React.Fragment, null, "Drag rows to reorder \xB7 ") : /*#__PURE__*/React.createElement(React.Fragment, null, "Auto-sorted by priority \xB7 drag/arrows reorder within priority \xB7 "), /*#__PURE__*/React.createElement("kbd", null, "/"), " search \xB7 ", /*#__PURE__*/React.createElement("kbd", null, "n"), " new"))), /*#__PURE__*/React.createElement("div", {
     className: "content-scroll"
-  }, filtered.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, isMulti && projects.length > 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "project-sections"
+  }, projects.map(p => {
+    const pidOf = e => e._projectId ?? projects[0]?.id;
+    const projEntries = filtered.filter(e => pidOf(e) === p.id);
+    const itemCount = countAll(data.entries.filter(e => pidOf(e) === p.id));
+    const isExpanded = projectExpandedMap[p.id] !== false;
+    const unhealthy = p.missing || p.error;
+    return /*#__PURE__*/React.createElement("div", {
+      key: p.id,
+      className: "project-section"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: `project-section-header ${isExpanded ? 'expanded' : 'collapsed'}${unhealthy ? ' missing' : ''}`,
+      onClick: () => toggleProjectExpanded(p.id),
+      title: p.path
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "project-section-chevron"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: isExpanded ? 'chevron' : 'chevronRight',
+      size: 12
+    })), /*#__PURE__*/React.createElement("span", {
+      className: "project-section-name"
+    }, p.name), unhealthy && /*#__PURE__*/React.createElement("span", {
+      className: "project-missing-badge"
+    }, p.missing ? 'missing' : 'error'), /*#__PURE__*/React.createElement("span", {
+      className: "project-section-count"
+    }, itemCount, " item", itemCount !== 1 ? 's' : ''), /*#__PURE__*/React.createElement("div", {
+      className: "project-section-actions"
+    }, /*#__PURE__*/React.createElement("button", {
+      className: "project-section-btn",
+      title: `Add item to ${p.name}`,
+      onClick: e => {
+        e.stopPropagation();
+        onMutate.addRoot(p.id);
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "plus",
+      size: 11
+    })), /*#__PURE__*/React.createElement("button", {
+      className: "project-section-btn",
+      title: "Rename project",
+      onClick: e => {
+        e.stopPropagation();
+        handleRenameProject(p.id);
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "edit",
+      size: 11
+    })), /*#__PURE__*/React.createElement("button", {
+      className: "project-section-btn project-section-btn-danger",
+      title: "Remove project from registry",
+      onClick: e => {
+        e.stopPropagation();
+        handleRemoveProject(p.id);
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "trash",
+      size: 11
+    })))), isExpanded && /*#__PURE__*/React.createElement("div", {
+      className: "project-section-content",
+      onDragOver: sectionDragOver,
+      onDragLeave: sectionDragLeave,
+      onDrop: e => handleSectionDrop(e, p.id)
+    }, unhealthy ? /*#__PURE__*/React.createElement("div", {
+      className: "project-empty"
+    }, p.missing ? /*#__PURE__*/React.createElement(React.Fragment, null, "File not found on disk \u2014 restore it, or remove this project. ", /*#__PURE__*/React.createElement("span", {
+      className: "mono"
+    }, p.path)) : /*#__PURE__*/React.createElement(React.Fragment, null, "Failed to load this project: ", p.error)) : projEntries.length === 0 ? /*#__PURE__*/React.createElement("div", {
+      className: "project-empty"
+    }, hasFilters ? 'No items match these filters.' : 'No items in this project yet.') : /*#__PURE__*/React.createElement(BacklogTree, {
+      items: projEntries,
+      expandedMap: expandedMap,
+      setExpanded: setExpanded,
+      onMutate: onMutate,
+      query: filters.text?.trim() || '',
+      statusStyle: tweaks.status_style,
+      manualOrder: tweaks.sort_mode === 'manual'
+    })));
+  })) : filtered.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-glyph"
@@ -7891,12 +9149,20 @@ function App() {
     onViewItem: item => setItemDialog({
       mode: 'view',
       initial: item
-    })
+    }),
+    storageMode: storageMode,
+    projects: projects,
+    onRegisterProject: (path, name) => registerProjectAndRefresh(path, name).then(result => showToast(`Project registered: ${result.name}`)).catch(e => showToast('Register failed: ' + e.message, 'err')),
+    onRenameProject: handleRenameProject,
+    onRemoveProject: handleRemoveProject
   }), /*#__PURE__*/React.createElement(ItemDialog, {
     open: !!itemDialog,
     mode: itemDialog?.mode,
     initial: itemDialog?.initial,
     recentTags: recentTags,
+    isMultiProject: isMulti && storageMode === 'api',
+    projects: projects,
+    defaultProjectId: itemDialog?.projectId ?? projects[0]?.id,
     onClose: () => setItemDialog(null),
     onSubmit: submitItemDialog
   }), /*#__PURE__*/React.createElement(ConfirmDialog, {
@@ -7904,14 +9170,28 @@ function App() {
     title: confirm?.title,
     message: confirm?.message,
     detail: confirm?.detail,
+    checkbox: confirm?.checkbox,
     confirmLabel: confirm?.confirmLabel,
     danger: confirm?.danger,
     onCancel: () => setConfirm(null),
     onConfirm: confirm?.onConfirm
+  }), prompt && /*#__PURE__*/React.createElement(window.PromptDialog, {
+    open: true,
+    title: prompt.title,
+    message: prompt.message,
+    placeholder: prompt.placeholder,
+    confirmLabel: prompt.confirmLabel,
+    onCancel: () => setPrompt(null),
+    onConfirm: value => {
+      const cb = prompt.onConfirm;
+      setPrompt(null);
+      cb?.(value);
+    }
   }), /*#__PURE__*/React.createElement(ImportExportDialog, {
     open: importExportOpen,
     data: data,
     storageMode: storageMode,
+    projects: projects,
     onClose: () => setImportExportOpen(false),
     onImport: handleImport
   }), toast && /*#__PURE__*/React.createElement("div", {
@@ -8136,10 +9416,15 @@ function Header({
 }
 
 // ----- Import / Export dialog -----
+// Multi-project api mode (projects.length > 1) adds a "Target project"
+// select: export serializes only the selected project's entries/history (as a
+// plain upstream file — merge-only id suffixes stripped), import writes only
+// that project's backlog.md. Single-project mode is unchanged.
 function ImportExportDialog({
   open,
   data,
   storageMode,
+  projects = [],
   onClose,
   onImport
 }) {
@@ -8151,30 +9436,55 @@ function ImportExportDialog({
   const [tab, setTab] = useStateD('md');
   const [copied, setCopied] = useStateD(false);
   const [mdContent, setMdContent] = useStateD('');
+  const [targetId, setTargetId] = useStateD(null);
   const fileInputRef = useRefD(null);
+  const isMulti = storageMode === 'api' && projects.length > 1;
+
+  // Default the target to the first registered project on every open.
+  useEffectD(() => {
+    if (open) setTargetId(projects[0]?.id ?? null);
+  }, [open]);
+
+  // Export scope: full data in single mode; the selected project's rows in
+  // multi mode (toDiskIds keeps exported ids free of `~project` suffixes).
+  const exportScope = React.useMemo(() => {
+    if (!isMulti || !targetId) {
+      return {
+        entries: data?.entries || [],
+        history: data?.history || [],
+        meta: data?.meta
+      };
+    }
+    const pidOf = x => x._projectId ?? projects[0]?.id;
+    const scoped = toDiskIds((data?.entries || []).filter(e => pidOf(e) === targetId), (data?.history || []).filter(h => pidOf(h) === targetId), targetId);
+    return {
+      ...scoped,
+      meta: data?.meta
+    };
+  }, [isMulti, targetId, data, projects]);
 
   // Async-generate markdown when dialog opens or data changes.
   useEffectD(() => {
     if (!open || !data) return;
     let cancelled = false;
     Parser.serialize({
-      entries: data.entries,
-      history: data.history
+      entries: exportScope.entries,
+      history: exportScope.history
     }).then(md => {
       if (!cancelled) setMdContent(md);
     }).catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [open, data]);
+  }, [open, data, exportScope]);
   const jsonContent = React.useMemo(() => {
     if (!data) return '';
     return JSON.stringify({
-      entries: data.entries,
-      history: data.history,
-      meta: data.meta
+      entries: exportScope.entries,
+      history: exportScope.history,
+      meta: exportScope.meta
     }, null, 2);
-  }, [data]);
+  }, [data, exportScope]);
   const currentContent = tab === 'md' ? mdContent : jsonContent;
   const filename = tab === 'md' ? 'backlog.md' : 'backlog_export.json';
   const mimeType = tab === 'md' ? 'text/markdown' : 'application/json';
@@ -8226,7 +9536,8 @@ function ImportExportDialog({
       }
       onImport({
         entries,
-        history
+        history,
+        targetProjectId: isMulti ? targetId : undefined
       });
     } catch (err) {
       alert('Import failed: ' + err.message);
@@ -8244,7 +9555,22 @@ function ImportExportDialog({
     onClose: onClose
   }), /*#__PURE__*/React.createElement("div", {
     className: "dlg-body"
-  }, /*#__PURE__*/React.createElement("div", {
+  }, isMulti && /*#__PURE__*/React.createElement("div", {
+    className: "ie-target-row"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "ie-target-label",
+    htmlFor: "ie-target-select"
+  }, "Target project"), /*#__PURE__*/React.createElement("select", {
+    id: "ie-target-select",
+    className: "ie-target",
+    value: targetId ?? '',
+    onChange: e => setTargetId(e.target.value)
+  }, projects.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.id,
+    value: p.id
+  }, p.name))), /*#__PURE__*/React.createElement("span", {
+    className: "card-sub"
+  }, "export and import apply to this project only")), /*#__PURE__*/React.createElement("div", {
     className: "ie-tabs"
   }, /*#__PURE__*/React.createElement("button", {
     className: `ie-tab ${tab === 'md' ? 'active' : ''}`,
@@ -8361,6 +9687,15 @@ function ArchiveSearchResults({
     className: "archive-search-more"
   }, "...and ", matches.length - 10, " more (see Admin \u2192 Archive)")));
 }
+
+// Multi-project data-layer helpers — consumed by todos 6-8 (sections UI,
+// dialogs, admin) and the todo-5 verification harness.
+Object.assign(window, {
+  buildMergedDataFromProjects,
+  computeDirtyProjectIds,
+  retagSubtree,
+  toDiskIds
+});
 window.App = App;
 </script>
   <script>

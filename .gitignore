@@ -58,3 +58,8 @@ stats.jsonl
 .pre-commit-config.yaml
 
 .direnv
+
+# Multi-project runtime state / agent tooling
+server/projects.json
+.omo/
+.playwright-mcp/
