@@ -169,6 +169,8 @@ function App() {
   const latestProjectExpandedMap = useRefMain(projectExpandedMap);
   const isDirtyRef        = useRefMain(false);
   const saveTimerRef      = useRefMain(null);
+  const saveInFlightRef   = useRefMain(null);  // promise of the performSave currently running
+  const pendingSaveArgsRef = useRefMain(null); // { label, projectId } of the debounced save
 
   useEffectMain(() => { latestData.current = data; },         [data]);
   useEffectMain(() => { latestExpandedMap.current = expandedMap; }, [expandedMap]);
@@ -200,6 +202,15 @@ function App() {
   // Full reload of every registered project + merged data rebuild. Used by
   // init, 'set-changed' polls, restores, and the admin flows (todos 6-8).
   const reloadProjects = async ({ seedExpanded = false } = {}) => {
+    // Drain pending/in-flight saves first: replacing state from disk while
+    // edits sit in the 600ms debounce (or a save POST is mid-flight) would
+    // silently discard them. On flush failure abort — never clobber state.
+    try {
+      await flushPendingSave();
+    } catch (e) {
+      showToast('Save failed: ' + e.message, 'err');
+      return null;
+    }
     const [projs, sizeInfo, backups] = await Promise.all([
       ApiBackend.loadAllProjects(),
       Storage.getHealthInfo(),
@@ -411,50 +422,95 @@ function App() {
   // ---- Real async save ----
   // projectId (string or array) restricts the save to that project(s);
   // omitted = derive the dirty set from _projectId tags.
+  // Returns null on success or the caught error (dirty stays set on failure).
+  const performSave = async (label, projectId = null) => {
+    const d  = latestData.current;
+    const em = latestExpandedMap.current;
+    try {
+      if (Storage.mode === 'api') {
+        // Unified api save path: serialize every DIRTY project separately.
+        // A single registered project is the same loop with one element.
+        const fallbackFirst = latestProjects.current[0]?.id ?? null;
+        const dirtyIds = computeDirtyProjectIds(d, projectId, fallbackFirst);
+        for (const pId of dirtyIds) {
+          const projectEntries = d.entries.filter(e => (e._projectId ?? fallbackFirst) === pId);
+          const projectHistory = d.history.filter(h => (h._projectId ?? fallbackFirst) === pId);
+          const content = await Parser.serialize(toDiskIds(projectEntries, projectHistory, pId));
+          const result  = await ApiBackend.saveProject(pId, content);
+          // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
+          if (result?.checksum) SyncPoller.lastChecksums[pId] = result.checksum;
+        }
+      } else if (Storage.isConnected()) {
+        const content = await Parser.serialize({ entries: d.entries, history: d.history });
+        await Storage.save(content);
+        // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
+        const cm = content.match(/checksum:\s*(sha256:[a-f0-9]+)/);
+        if (cm) SyncPoller.lastChecksum = cm[1];
+      }
+      saveLocalState(em, tweaks, latestProjectExpandedMap.current);
+      isDirtyRef.current = false;
+      const now = new Date().toISOString();
+      setSaveState({ status: 'saved', lastSaved: now });
+      setData(prev => ({
+        ...prev,
+        health: { ...prev.health, lastSave: now },
+        meta:   { ...prev.meta,   saved: now },
+      }));
+      if (label) showToast(label);
+      return null;
+    } catch (e) {
+      setSaveState(prev => ({ ...prev, status: 'error' }));
+      showToast('Save failed: ' + e.message, 'err');
+      return e;
+    }
+  };
+
+  // Run performSave under in-flight tracking: the ref holds the promise
+  // while it runs and clears on settle (only if still the same promise).
+  const startTrackedSave = (label, projectId = null) => {
+    const p = performSave(label, projectId).finally(() => {
+      if (saveInFlightRef.current === p) saveInFlightRef.current = null;
+    });
+    saveInFlightRef.current = p;
+    return p;
+  };
+
   const triggerSave = (label, projectId = null) => {
     isDirtyRef.current = true;
     setSaveState(prev => ({ ...prev, status: 'saving' }));
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    pendingSaveArgsRef.current = { label, projectId };
 
-    saveTimerRef.current = setTimeout(async () => {
-      const d  = latestData.current;
-      const em = latestExpandedMap.current;
-      try {
-        if (Storage.mode === 'api') {
-          // Unified api save path: serialize every DIRTY project separately.
-          // A single registered project is the same loop with one element.
-          const fallbackFirst = latestProjects.current[0]?.id ?? null;
-          const dirtyIds = computeDirtyProjectIds(d, projectId, fallbackFirst);
-          for (const pId of dirtyIds) {
-            const projectEntries = d.entries.filter(e => (e._projectId ?? fallbackFirst) === pId);
-            const projectHistory = d.history.filter(h => (h._projectId ?? fallbackFirst) === pId);
-            const content = await Parser.serialize(toDiskIds(projectEntries, projectHistory, pId));
-            const result  = await ApiBackend.saveProject(pId, content);
-            // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
-            if (result?.checksum) SyncPoller.lastChecksums[pId] = result.checksum;
-          }
-        } else if (Storage.isConnected()) {
-          const content = await Parser.serialize({ entries: d.entries, history: d.history });
-          await Storage.save(content);
-          // Keep SyncPoller in sync with our own save to avoid false external-change triggers.
-          const cm = content.match(/checksum:\s*(sha256:[a-f0-9]+)/);
-          if (cm) SyncPoller.lastChecksum = cm[1];
-        }
-        saveLocalState(em, tweaks, latestProjectExpandedMap.current);
-        isDirtyRef.current = false;
-        const now = new Date().toISOString();
-        setSaveState({ status: 'saved', lastSaved: now });
-        setData(prev => ({
-          ...prev,
-          health: { ...prev.health, lastSave: now },
-          meta:   { ...prev.meta,   saved: now },
-        }));
-        if (label) showToast(label);
-      } catch (e) {
-        setSaveState(prev => ({ ...prev, status: 'error' }));
-        showToast('Save failed: ' + e.message, 'err');
-      }
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      const { label, projectId } = pendingSaveArgsRef.current ?? {};
+      pendingSaveArgsRef.current = null;
+      startTrackedSave(label, projectId);
     }, 600);
+  };
+
+  // Drain pending edits into disk before a full state reload: fire the
+  // debounced save now, wait out any save already in flight, and retry once
+  // if edits landed meanwhile. No-op when clean. Mirrors the guard
+  // SyncPoller._tickMulti implements for its own path. Rethrows the error
+  // on failure — dirty is left set so the pending edits survive.
+  const flushPendingSave = async () => {
+    let err = null;
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      const args = pendingSaveArgsRef.current;
+      pendingSaveArgsRef.current = null;
+      err = await startTrackedSave(args?.label ?? null, args?.projectId ?? null);
+    }
+    if (saveInFlightRef.current) {
+      const e = await saveInFlightRef.current;
+      err = err ?? e;
+    }
+    if (isDirtyRef.current) {
+      err = await startTrackedSave(null, null);
+    }
+    if (err) throw err;
   };
 
   const mutate = (fn) => {
@@ -743,6 +799,10 @@ function App() {
       onConfirm: async (newName) => {
         if (!newName || newName === proj.name) return;
         try {
+          // Flush pending edits under the CURRENT id first — after the
+          // rename POST a save tagged with the old id would 404 forever.
+          // (reloadProjects' own flush cannot help: it runs too late here.)
+          await flushPendingSave();
           const result = await ApiBackend.renameProject(projectId, newName);
           if (!result.ok) throw new Error(result.error || 'Rename failed');
           setProjectExpandedMap(prev => {
