@@ -1501,6 +1501,29 @@ input { font: inherit; color: inherit; }
   cursor: pointer;
 }
 
+/* ---------- Row context menu ---------- */
+.ctx-menu {
+  position: fixed; z-index: 60;
+  width: 200px; padding: 4px;
+  background: var(--paper); border: 1px solid var(--rule);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-pop);
+}
+.ctx-menu-label {
+  padding: 6px 8px 4px;
+  font-size: 11px; font-weight: 600;
+  color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em;
+}
+.ctx-menu-item {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 4px;
+  font-size: 13px; color: var(--ink); text-align: left;
+}
+.ctx-menu-item:hover { background: var(--bg-2); }
+.ctx-menu-item.active { background: var(--accent-soft); color: var(--accent-deep); }
+.ctx-menu-item.danger { color: var(--danger); }
+.ctx-menu-item.danger:hover { background: var(--danger-soft); }
+.ctx-menu-sep { height: 1px; margin: 4px 6px; background: var(--rule-2); }
+
 </style>
 </head>
 <body>
@@ -4942,6 +4965,103 @@ function StatusPopover({
   }), /*#__PURE__*/React.createElement("span", null, s.label))));
 }
 
+// Right-click context menu: set status / archive / delete, fixed at the cursor.
+function ItemContextMenu({
+  item,
+  statusStyle,
+  anchor,
+  onSetStatus,
+  onArchive,
+  onDelete,
+  onClose
+}) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({
+    left: anchor.x,
+    top: anchor.y
+  });
+
+  // Viewport clamp (upstream ItemPeek pattern): flip left / above when overflowing.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const pad = 12,
+      gap = 14;
+    let left = anchor.x + gap,
+      top = anchor.y + gap;
+    if (left + r.width > window.innerWidth - pad) left = Math.max(pad, anchor.x - r.width - gap);
+    if (top + r.height > window.innerHeight - pad) top = Math.max(pad, anchor.y - r.height - gap);
+    setPos({
+      left,
+      top
+    });
+  }, [anchor.x, anchor.y, item]);
+
+  // Capture-phase scroll/wheel: any scrollable container must close the cursor-anchored menu.
+  useEffect(() => {
+    const onPointerDown = e => {
+      if (!ref.current?.contains(e.target)) onClose();
+    };
+    const onKeyDown = e => {
+      if (e.key === "Escape") onClose();
+    };
+    const onMove = () => onClose();
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("scroll", onMove, true);
+    document.addEventListener("wheel", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("scroll", onMove, true);
+      document.removeEventListener("wheel", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [onClose]);
+  return /*#__PURE__*/React.createElement("div", {
+    ref: ref,
+    className: "ctx-menu",
+    style: {
+      left: pos.left,
+      top: pos.top
+    },
+    onContextMenu: e => e.preventDefault()
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ctx-menu-label"
+  }, "Set status"), STATUSES.map(s => /*#__PURE__*/React.createElement("button", {
+    key: s.key,
+    className: `ctx-menu-item ${s.key === item.status ? "active" : ""}`,
+    onClick: () => {
+      onSetStatus(s.key);
+      onClose();
+    }
+  }, /*#__PURE__*/React.createElement(StatusIcon, {
+    status: s.key,
+    style: statusStyle,
+    size: 13
+  }), /*#__PURE__*/React.createElement("span", null, s.label))), /*#__PURE__*/React.createElement("div", {
+    className: "ctx-menu-sep"
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "ctx-menu-item",
+    onClick: () => {
+      onArchive();
+      onClose();
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "archive"
+  }), /*#__PURE__*/React.createElement("span", null, "Archive")), /*#__PURE__*/React.createElement("button", {
+    className: "ctx-menu-item danger",
+    onClick: () => {
+      onDelete();
+      onClose();
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "trash"
+  }), /*#__PURE__*/React.createElement("span", null, "Delete")));
+}
+
 // Single tree row
 function ItemRow({
   item,
@@ -4953,6 +5073,7 @@ function ItemRow({
   onSetStatus,
   onAddChild,
   onDelete,
+  onArchive,
   onEdit,
   onSetPriority,
   onMoveUp,
@@ -4968,6 +5089,7 @@ function ItemRow({
 }) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [priOpen, setPriOpen] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState(null);
   const overdue = isOverdue(item);
   const isP0 = item.priority === "P0" && item.status !== "done" && item.status !== "cancelled";
   const isDone = item.status === "done" || item.status === "cancelled";
@@ -4982,10 +5104,30 @@ function ItemRow({
   return /*#__PURE__*/React.createElement("div", {
     className: `row level-${depth} ${dimmed ? "dimmed" : ""} ${isP0 ? "p0" : ""} ${dropTarget ? "drop-target" : ""}`,
     draggable: true,
-    onDragStart: e => onDragStart?.(e, item),
+    onDragStart: e => {
+      setCtxMenu(null);
+      onDragStart?.(e, item);
+    },
     onDragOver: e => onDragOver?.(e, item),
-    onDrop: e => onDrop?.(e, item)
-  }, /*#__PURE__*/React.createElement("span", {
+    onDrop: e => onDrop?.(e, item),
+    onContextMenu: e => {
+      e.preventDefault();
+      setStatusOpen(false);
+      setPriOpen(false);
+      setCtxMenu({
+        x: e.clientX,
+        y: e.clientY
+      });
+    }
+  }, ctxMenu && ReactDOM.createPortal(/*#__PURE__*/React.createElement(ItemContextMenu, {
+    item: item,
+    statusStyle: statusStyle,
+    anchor: ctxMenu,
+    onSetStatus: onSetStatus,
+    onArchive: onArchive,
+    onDelete: onDelete,
+    onClose: () => setCtxMenu(null)
+  }), document.body), /*#__PURE__*/React.createElement("span", {
     className: "row-rail",
     style: {
       width: depth * 18
@@ -5181,6 +5323,7 @@ function BacklogTree({
         onSetPriority: p => onMutate.setPriority(item.id, p),
         onAddChild: () => onMutate.addChild(item.id),
         onDelete: () => onMutate.deleteItem(item.id),
+        onArchive: () => onMutate.archiveItem(item.id),
         onEdit: () => onMutate.editItem(item.id),
         onMoveUp: () => onMutate.moveWithinPriority(item.id, -1),
         onMoveDown: () => onMutate.moveWithinPriority(item.id, +1),
@@ -8313,6 +8456,15 @@ function App() {
           triggerSave('Deleted', projectId);
         }
       });
+    },
+    archiveItem: async id => {
+      try {
+        await flushPendingSave();
+      } catch (e) {
+        showToast('Save failed: ' + e.message, 'err');
+        return;
+      }
+      handleArchiveItems([id]);
     }
   };
 

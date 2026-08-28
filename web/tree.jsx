@@ -45,14 +45,74 @@ function StatusPopover({ value, style, onChange, onClose, anchorRect }) {
   );
 }
 
+// Right-click context menu: set status / archive / delete, fixed at the cursor.
+function ItemContextMenu({ item, statusStyle, anchor, onSetStatus, onArchive, onDelete, onClose }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({ left: anchor.x, top: anchor.y });
+
+  // Viewport clamp (upstream ItemPeek pattern): flip left / above when overflowing.
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    const pad = 12, gap = 14;
+    let left = anchor.x + gap, top = anchor.y + gap;
+    if (left + r.width > window.innerWidth - pad) left = Math.max(pad, anchor.x - r.width - gap);
+    if (top + r.height > window.innerHeight - pad) top = Math.max(pad, anchor.y - r.height - gap);
+    setPos({ left, top });
+  }, [anchor.x, anchor.y, item]);
+
+  // Capture-phase scroll/wheel: any scrollable container must close the cursor-anchored menu.
+  useEffect(() => {
+    const onPointerDown = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
+    const onKeyDown = (e) => { if (e.key === "Escape") onClose(); };
+    const onMove = () => onClose();
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("scroll", onMove, true);
+    document.addEventListener("wheel", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("scroll", onMove, true);
+      document.removeEventListener("wheel", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [onClose]);
+
+  return (
+    <div ref={ref} className="ctx-menu" style={{ left: pos.left, top: pos.top }}
+      onContextMenu={(e) => e.preventDefault()}>
+      <div className="ctx-menu-label">Set status</div>
+      {STATUSES.map(s => (
+        <button key={s.key} className={`ctx-menu-item ${s.key === item.status ? "active" : ""}`}
+          onClick={() => { onSetStatus(s.key); onClose(); }}>
+          <StatusIcon status={s.key} style={statusStyle} size={13}/>
+          <span>{s.label}</span>
+        </button>
+      ))}
+      <div className="ctx-menu-sep"/>
+      <button className="ctx-menu-item" onClick={() => { onArchive(); onClose(); }}>
+        <Icon name="archive"/>
+        <span>Archive</span>
+      </button>
+      <button className="ctx-menu-item danger" onClick={() => { onDelete(); onClose(); }}>
+        <Icon name="trash"/>
+        <span>Delete</span>
+      </button>
+    </div>
+  );
+}
+
 // Single tree row
 function ItemRow({ item, depth, expanded, hasChildren, statusStyle,
-  onToggle, onSetStatus, onAddChild, onDelete, onEdit, onSetPriority,
+  onToggle, onSetStatus, onAddChild, onDelete, onArchive, onEdit, onSetPriority,
   onMoveUp, onMoveDown, canMoveUp, canMoveDown,
   onDragStart, onDragOver, onDrop,
   dimmed, query, dropTarget }) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [priOpen, setPriOpen] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState(null);
 
   const overdue = isOverdue(item);
   const isP0 = item.priority === "P0" && item.status !== "done" && item.status !== "cancelled";
@@ -73,10 +133,12 @@ function ItemRow({ item, depth, expanded, hasChildren, statusStyle,
     <div
       className={`row level-${depth} ${dimmed ? "dimmed" : ""} ${isP0 ? "p0" : ""} ${dropTarget ? "drop-target" : ""}`}
       draggable
-      onDragStart={(e) => onDragStart?.(e, item)}
+      onDragStart={(e) => { setCtxMenu(null); onDragStart?.(e, item); }}
       onDragOver={(e) => onDragOver?.(e, item)}
       onDrop={(e) => onDrop?.(e, item)}
+      onContextMenu={(e) => { e.preventDefault(); setStatusOpen(false); setPriOpen(false); setCtxMenu({ x: e.clientX, y: e.clientY }); }}
     >
+      {ctxMenu && ReactDOM.createPortal(<ItemContextMenu item={item} statusStyle={statusStyle} anchor={ctxMenu} onSetStatus={onSetStatus} onArchive={onArchive} onDelete={onDelete} onClose={() => setCtxMenu(null)}/>, document.body)}
       <span className="row-rail" style={{ width: depth * 18 }}/>
 
       <button
@@ -218,6 +280,7 @@ function BacklogTree({ items, expandedMap, setExpanded, onMutate, query, statusS
             onSetPriority={(p) => onMutate.setPriority(item.id, p)}
             onAddChild={() => onMutate.addChild(item.id)}
             onDelete={() => onMutate.deleteItem(item.id)}
+            onArchive={() => onMutate.archiveItem(item.id)}
             onEdit={() => onMutate.editItem(item.id)}
             onMoveUp={() => onMutate.moveWithinPriority(item.id, -1)}
             onMoveDown={() => onMutate.moveWithinPriority(item.id, +1)}

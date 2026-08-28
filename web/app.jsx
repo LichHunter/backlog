@@ -682,6 +682,8 @@ function App() {
         },
       });
     },
+
+    archiveItem: async (id) => { try { await flushPendingSave(); } catch (e) { showToast('Save failed: ' + e.message, 'err'); return; } handleArchiveItems([id]); },
   };
 
   // Which project does a NEW item belong to? An explicit hint (dialog select
