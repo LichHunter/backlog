@@ -247,6 +247,17 @@ function App() {
     }
   };
 
+  // Register a project and refresh every derived piece of state. Shared by
+  // the ItemDialog "Project" type (todo 7) and the admin Projects card
+  // register form (todo 8) — one implementation, two callers.
+  const registerProjectAndRefresh = async (path, name = null) => {
+    const result = await ApiBackend.registerProject(path, name);
+    if (!result.ok) throw new Error(result.error || 'Register failed');
+    await reloadProjects({ seedExpanded: false });
+    await SyncPoller.syncChecksums();
+    return result;
+  };
+
   // ---- Storage initialisation (runs once on mount) ----
   useEffectMain(() => {
     let cancelled = false;
@@ -630,13 +641,8 @@ function App() {
     if (vals.createAsProject && vals.projectPath) {
       const path = vals.projectPath;
       setItemDialog(null);
-      ApiBackend.registerProject(path, vals.title || null)
-        .then(async (result) => {
-          if (!result.ok) throw new Error(result.error || 'Register failed');
-          await reloadProjects({ seedExpanded: false });
-          await SyncPoller.syncChecksums();
-          showToast(`Project registered: ${result.name}`);
-        })
+      registerProjectAndRefresh(path, vals.title || null)
+        .then(result => showToast(`Project registered: ${result.name}`))
         .catch(e => showToast('Register failed: ' + e.message, 'err'));
       return;
     }
@@ -897,9 +903,34 @@ function App() {
   };
 
   // ---- Import entries from parsed content ----
-  const handleImport = ({ entries, history }) => {
-    // In api mode imported rows land in the first project (todo 8 adds a
-    // target-project selector); other projects are left untouched.
+  const handleImport = ({ entries, history, targetProjectId }) => {
+    // Multi-project target (todo 8): the dialog's "Target project" select
+    // routes the file into ONE project. Its backlog.md is written directly
+    // (merge-only id suffixes stripped via toDiskIds), other projects'
+    // files are untouched, then everything reloads from the server.
+    if (Storage.mode === 'api' && targetProjectId) {
+      if (!entries.length && !(history || []).length) {
+        showToast('Import failed: no entries found in file', 'err');
+        return;
+      }
+      (async () => {
+        try {
+          const content = await Parser.serialize(toDiskIds(entries, history || [], targetProjectId));
+          const result  = await ApiBackend.saveProject(targetProjectId, content);
+          if (!result.ok) throw new Error(result.error || 'Import failed');
+          if (result.checksum) SyncPoller.lastChecksums[targetProjectId] = result.checksum;
+          setImportExportOpen(false);
+          await reloadProjects({ seedExpanded: false });
+          await SyncPoller.syncChecksums();
+          showToast(`Imported into ${targetProjectId}`);
+        } catch (e) {
+          showToast('Import failed: ' + e.message, 'err');
+        }
+      })();
+      return;
+    }
+    // Single-project path: imported rows land in the first project (api
+    // mode with one registered project) or in the single backlog file.
     const pid = Storage.mode === 'api' ? resolveTargetProjectId() : null;
     mutate(d => {
       if (pid) {
@@ -1390,6 +1421,15 @@ function App() {
           onArchiveItems={handleArchiveItems}
           onRestoreItems={handleRestoreItems}
           onViewItem={(item) => setItemDialog({ mode: 'view', initial: item })}
+          storageMode={storageMode}
+          projects={projects}
+          onRegisterProject={(path, name) =>
+            registerProjectAndRefresh(path, name)
+              .then(result => showToast(`Project registered: ${result.name}`))
+              .catch(e => showToast('Register failed: ' + e.message, 'err'))
+          }
+          onRenameProject={handleRenameProject}
+          onRemoveProject={handleRemoveProject}
         />
       )}
 
@@ -1433,6 +1473,7 @@ function App() {
         open={importExportOpen}
         data={data}
         storageMode={storageMode}
+        projects={projects}
         onClose={() => setImportExportOpen(false)}
         onImport={handleImport}
       />
@@ -1571,27 +1612,54 @@ function Header({ view, setView, saveState, saveLabel, storageMode, searchValue,
 }
 
 // ----- Import / Export dialog -----
-function ImportExportDialog({ open, data, storageMode, onClose, onImport }) {
+// Multi-project api mode (projects.length > 1) adds a "Target project"
+// select: export serializes only the selected project's entries/history (as a
+// plain upstream file — merge-only id suffixes stripped), import writes only
+// that project's backlog.md. Single-project mode is unchanged.
+function ImportExportDialog({ open, data, storageMode, projects = [], onClose, onImport }) {
   const { useState: useStateD, useEffect: useEffectD, useRef: useRefD } = React;
   const [tab, setTab]         = useStateD('md');
   const [copied, setCopied]   = useStateD(false);
   const [mdContent, setMdContent] = useStateD('');
+  const [targetId, setTargetId]   = useStateD(null);
   const fileInputRef = useRefD(null);
+
+  const isMulti = storageMode === 'api' && projects.length > 1;
+
+  // Default the target to the first registered project on every open.
+  useEffectD(() => {
+    if (open) setTargetId(projects[0]?.id ?? null);
+  }, [open]);
+
+  // Export scope: full data in single mode; the selected project's rows in
+  // multi mode (toDiskIds keeps exported ids free of `~project` suffixes).
+  const exportScope = React.useMemo(() => {
+    if (!isMulti || !targetId) {
+      return { entries: data?.entries || [], history: data?.history || [], meta: data?.meta };
+    }
+    const pidOf = x => x._projectId ?? projects[0]?.id;
+    const scoped = toDiskIds(
+      (data?.entries || []).filter(e => pidOf(e) === targetId),
+      (data?.history || []).filter(h => pidOf(h) === targetId),
+      targetId,
+    );
+    return { ...scoped, meta: data?.meta };
+  }, [isMulti, targetId, data, projects]);
 
   // Async-generate markdown when dialog opens or data changes.
   useEffectD(() => {
     if (!open || !data) return;
     let cancelled = false;
-    Parser.serialize({ entries: data.entries, history: data.history })
+    Parser.serialize({ entries: exportScope.entries, history: exportScope.history })
       .then(md => { if (!cancelled) setMdContent(md); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [open, data]);
+  }, [open, data, exportScope]);
 
   const jsonContent = React.useMemo(() => {
     if (!data) return '';
-    return JSON.stringify({ entries: data.entries, history: data.history, meta: data.meta }, null, 2);
-  }, [data]);
+    return JSON.stringify({ entries: exportScope.entries, history: exportScope.history, meta: exportScope.meta }, null, 2);
+  }, [data, exportScope]);
 
   const currentContent = tab === 'md' ? mdContent : jsonContent;
   const filename       = tab === 'md' ? 'backlog.md' : 'backlog_export.json';
@@ -1635,7 +1703,7 @@ function ImportExportDialog({ open, data, storageMode, onClose, onImport }) {
         entries = parsed.entries;
         history = parsed.history;
       }
-      onImport({ entries, history });
+      onImport({ entries, history, targetProjectId: isMulti ? targetId : undefined });
     } catch (err) {
       alert('Import failed: ' + err.message);
     }
@@ -1645,6 +1713,22 @@ function ImportExportDialog({ open, data, storageMode, onClose, onImport }) {
     <Dialog open={open} onClose={onClose} width={760} labelledBy="dlg-ie-title">
       <DialogHeader id="dlg-ie-title" eyebrow="Backup & sync" title="Import / Export" onClose={onClose}/>
       <div className="dlg-body">
+        {isMulti && (
+          <div className="ie-target-row">
+            <label className="ie-target-label" htmlFor="ie-target-select">Target project</label>
+            <select
+              id="ie-target-select"
+              className="ie-target"
+              value={targetId ?? ''}
+              onChange={e => setTargetId(e.target.value)}
+            >
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <span className="card-sub">export and import apply to this project only</span>
+          </div>
+        )}
         <div className="ie-tabs">
           <button className={`ie-tab ${tab === 'md'   ? 'active' : ''}`} onClick={() => setTab('md')}>
             Markdown <span className="ie-tab-sub">.md</span>

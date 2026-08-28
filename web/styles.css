@@ -1450,3 +1450,41 @@ input { font: inherit; color: inherit; }
   font-size: 13px; color: var(--ink-2); cursor: pointer;
 }
 .dlg-checkbox input { width: 16px; height: 16px; accent-color: var(--danger); cursor: pointer; }
+
+/* ---- Admin Projects card + import/export target select (multi-project) ---- */
+.projects-table .projects-path {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projects-register {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 14px; flex-wrap: wrap;
+}
+.projects-input {
+  flex: 1 1 auto; min-width: 0;
+  font-family: var(--font-mono); font-size: 12.5px;
+  padding: 7px 10px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+}
+.projects-input::placeholder { color: var(--ink-3); }
+.projects-input:focus { outline: none; border-color: var(--accent-edge); }
+.projects-input-name { flex: 0 1 200px; font-family: inherit; }
+.ie-target-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 12px;
+}
+.ie-target-label {
+  font-size: 11px; font-weight: 600;
+  color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.ie-target {
+  font: inherit; font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--paper); color: var(--ink);
+  cursor: pointer;
+}

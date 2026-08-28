@@ -461,7 +461,106 @@ function AppearanceCard({ tweaks, setTweak }) {
   );
 }
 
-function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup, archiveData, onArchiveItems, onRestoreItems, onViewItem }) {
+// ---- Projects card (api mode only, todo 8) ----
+// Registry manager: rows come straight from the server (authoritative size /
+// missing flags). Rename/remove reuse the SAME app-level handlers the backlog
+// sections use, so the ConfirmDialog-with-checkbox and PromptDialog flows have
+// exactly one implementation.
+function ProjectsCard({ projects, onRegisterProject, onRenameProject, onRemoveProject }) {
+  const propRows = () => (projects || []).map(p => ({ name: p.name, path: p.path, size: undefined, missing: !!p.missing }));
+  const [rows, setRows]       = useState(propRows);
+  const [regPath, setRegPath] = useState('');
+  const [regName, setRegName] = useState('');
+  const [registering, setRegistering] = useState(false);
+
+  // Re-fetch the registry whenever the app-level project set changes
+  // (register/rename/remove/poller reloads); on failure fall back to the
+  // app's list so the card never blanks out.
+  useEffect(() => {
+    let cancelled = false;
+    ApiBackend.listProjects()
+      .then(list => { if (!cancelled && Array.isArray(list)) setRows(list); })
+      .catch(() => { if (!cancelled) setRows(propRows()); });
+    return () => { cancelled = true; };
+  }, [projects]);
+
+  const submitRegister = (e) => {
+    e.preventDefault();
+    const path = regPath.trim();
+    if (!path || registering) return;
+    setRegistering(true);
+    // onRegisterProject returns a promise; the app toasts success/error.
+    Promise.resolve(onRegisterProject(path, regName.trim() || null))
+      .finally(() => {
+        setRegistering(false);
+        setRegPath('');
+        setRegName('');
+      });
+  };
+
+  return (
+    <section className="card span-2">
+      <div className="card-head">
+        <h3>Projects</h3>
+        <span className="card-sub">{rows.length} registered · rename and remove act on the registry, not the file</span>
+      </div>
+      <table className="backup-table projects-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Path</th>
+            <th>Size</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.name}>
+              <td className="mono">{r.name}</td>
+              <td className="mono projects-path" title={r.path}>{r.path}</td>
+              <td>{typeof r.size === 'number' ? fmtBytes(r.size) : <span className="muted">—</span>}</td>
+              <td>
+                {r.missing
+                  ? <span className="project-missing-badge">missing</span>
+                  : <span className="pill mini ok">✓ ok</span>}
+              </td>
+              <td className="row-actions-cell">
+                <button className="row-btn" disabled={!!r.missing} onClick={() => onRenameProject(r.name)}>
+                  <Icon name="edit" size={12}/> Rename
+                </button>
+                <button className="row-btn" onClick={() => onRemoveProject(r.name)}>
+                  <Icon name="trash" size={12}/> Remove
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <form className="projects-register" onSubmit={submitRegister}>
+        <input
+          type="text"
+          className="projects-input"
+          placeholder="/path/to/project — directory or .md file"
+          value={regPath}
+          onChange={e => setRegPath(e.target.value)}
+        />
+        <input
+          type="text"
+          className="projects-input projects-input-name"
+          placeholder="Display name (optional)"
+          value={regName}
+          onChange={e => setRegName(e.target.value)}
+        />
+        <button className="btn-primary" type="submit" disabled={!regPath.trim() || registering}>
+          <Icon name="plus" size={12}/> Register
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onForceBackup, onCompact, onRestore, onDownloadBackup, archiveData, onArchiveItems, onRestoreItems, onViewItem, storageMode, projects, onRegisterProject, onRenameProject, onRemoveProject }) {
   const [previewBackup, setPreviewBackup] = useState(null);
 
   const counts = countByStatus(data.entries);
@@ -520,6 +619,16 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onFo
             <div><dt>Oldest event</dt><dd className="mono small">{fmtTimestamp(data.health.historyOldest)}</dd></div>
           </dl>
         </section>
+
+        {/* Projects (api mode only) */}
+        {storageMode === 'api' && (
+          <ProjectsCard
+            projects={projects}
+            onRegisterProject={onRegisterProject}
+            onRenameProject={onRenameProject}
+            onRemoveProject={onRemoveProject}
+          />
+        )}
 
         {/* Manual actions */}
         <section className="card">
@@ -657,6 +766,7 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onFo
           onArchiveItems={onArchiveItems}
           onRestoreItems={onRestoreItems}
           onViewItem={onViewItem}
+          projects={storageMode === 'api' ? projects : []}
         />
 
         {/* Recent history */}
@@ -698,16 +808,36 @@ function AdminPage({ data, onClose, history, tweaks, setTweak, onForceSave, onFo
 }
 
 // ---- Archive Manager Card ----
-function ArchiveCard({ entries, archiveData, onArchiveItems, onRestoreItems, onViewItem }) {
+// In multi-project api mode the card scopes to ONE project (select at the
+// top): both lists and every count reflect the selection. Writes already
+// route per-project in app.jsx (archive/restore group by _projectId), so the
+// select is a read-side filter — restore of an item from project X rewrites
+// only X's backlog.md + archive.md. Single-project mode renders exactly as
+// before (no select).
+function ArchiveCard({ entries, archiveData, onArchiveItems, onRestoreItems, onViewItem, projects = [] }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [filter, setFilter] = useState('done'); // 'done', 'cancelled', 'all'
   const [searchTerm, setSearchTerm] = useState('');
   const [archiveSearchTerm, setArchiveSearchTerm] = useState('');
   const [expandedArchive, setExpandedArchive] = useState(false);
+  const isMulti = projects.length > 1;
+  const [archivePid, setArchivePid] = useState(projects[0]?.id ?? null);
+
+  // Keep the selection valid across register/rename/remove reloads.
+  useEffect(() => {
+    if (isMulti && !projects.some(p => p.id === archivePid)) {
+      setArchivePid(projects[0]?.id ?? null);
+    }
+  }, [projects]);
+
+  const pidOf = x => x._projectId ?? projects[0]?.id;
+  const scopedBacklog   = isMulti ? entries.filter(e => pidOf(e) === archivePid) : entries;
+  const scopedArchive   = isMulti ? (archiveData?.entries || []).filter(e => pidOf(e) === archivePid)
+                                  : (archiveData?.entries || []);
 
   // Find archivable items (done or cancelled)
   const archivableItems = [];
-  walkTree(entries, (item) => {
+  walkTree(scopedBacklog, (item) => {
     if (filter === 'all' || item.status === filter) {
       if (item.status === 'done' || item.status === 'cancelled') {
         archivableItems.push(item);
@@ -721,7 +851,7 @@ function ArchiveCard({ entries, archiveData, onArchiveItems, onRestoreItems, onV
   );
 
   // Archive entries
-  const archiveEntries = archiveData?.entries || [];
+  const archiveEntries = scopedArchive;
   const filteredArchiveItems = [];
   walkTree(archiveEntries, (item) => {
     if (!archiveSearchTerm || item.title.toLowerCase().includes(archiveSearchTerm.toLowerCase())) {
@@ -748,9 +878,25 @@ function ArchiveCard({ entries, archiveData, onArchiveItems, onRestoreItems, onV
     <section className="card span-3">
       <div className="card-head">
         <h3>Archive manager</h3>
-        <span className="card-sub">
-          {archivableItems.length} archivable · {archiveEntries.length} archived
-        </span>
+        <div className="card-head-right" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {isMulti && (
+            <select
+              value={archivePid ?? ''}
+              onChange={e => setArchivePid(e.target.value)}
+              className="archive-filter"
+              title="Archive source project"
+              aria-label="Archive source project"
+            >
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          )}
+          <span className="card-sub">
+            {archivableItems.length} archivable · {archiveEntries.length} archived
+            {isMulti ? ` · ${archivePid}` : ''}
+          </span>
+        </div>
       </div>
 
       {/* Archivable items */}
@@ -850,3 +996,4 @@ function ArchiveCard({ entries, archiveData, onArchiveItems, onRestoreItems, onV
 
 window.AdminPage = AdminPage;
 window.ArchiveCard = ArchiveCard;
+window.ProjectsCard = ProjectsCard;
