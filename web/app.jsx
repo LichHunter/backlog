@@ -943,7 +943,8 @@ function App() {
             if (!result.ok) throw new Error(result.error || 'Restore failed');
             if (Storage.mode === 'api') {
               // The legacy backup route restored the default project — refresh everything.
-              await reloadProjects({ seedExpanded: false });
+              // Null = flush failed ('Save failed' toast shown there); keep dirty state, skip success toast.
+              if (!(await reloadProjects({ seedExpanded: false }))) return;
               await SyncPoller.syncChecksums();
             } else {
               const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getHealthInfo()]);
