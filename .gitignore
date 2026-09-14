@@ -42,6 +42,7 @@ src-tauri/gen/
 result
 result-*
 .direnv/
+.devenv*
 
 # Keep lock files for reproducible builds
 !package-lock.json
