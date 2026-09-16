@@ -1,3 +1,4 @@
+pub mod registry;
 mod server;
 mod state;
 
