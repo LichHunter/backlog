@@ -7314,6 +7314,27 @@ function saveLocalState(expandedMap, tweaks) {
   } catch {/* quota / private mode */}
 }
 
+// Multi-project mode: each project keeps its own UI state under
+// LS_KEY + ':' + id. The bare LS_KEY is only ever written by standalone mode.
+const ACTIVE_PROJECT_KEY = 'backlog.activeProject';
+function loadProjectLocalState(projectId) {
+  try {
+    const raw = localStorage.getItem(LS_KEY + ':' + projectId);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+function saveProjectLocalState(projectId, expandedMap, tweaks) {
+  try {
+    localStorage.setItem(LS_KEY + ':' + projectId, JSON.stringify({
+      expandedMap,
+      tweaks
+    }));
+  } catch {/* quota */}
+}
+
 // Empty starting state — used when there is no saved data and no seed data loaded.
 function buildEmptyData() {
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => ({
@@ -7392,6 +7413,24 @@ function App() {
     entries: [],
     history: []
   });
+
+  // ---- Multi-project mode state (app server present) ----
+  const [appMode, setAppMode] = useStateMain(null); // 'multi' | 'standalone' | null (booting)
+  const [projects, setProjects] = useStateMain([]); // [{id,name,path,default}]
+  const [activeProjectId, setActiveProjectId] = useStateMain(null);
+  const [docsVersion, setDocsVersion] = useStateMain(0); // re-render tick for docsRef mutations
+  const [switching, setSwitching] = useStateMain(false); // lazy-loading a tab's doc
+  const [addProject, setAddProject] = useStateMain(null); // {path, name} while dialog open
+  const [tabMenu, setTabMenu] = useStateMain(null); // {x, y, project}
+
+  const appModeRef = useRefMain(null);
+  const activeProjectIdRef = useRefMain(null);
+  const docsRef = useRefMain(new Map()); // id → {data, checksum, dirty, saving, error, conflict, loaded, savedAt}
+  const multiRef = useRefMain(null); // {api, poller, backends:Map, timers:Map}
+  const pendingLabelsRef = useRefMain(new Map()); // id → toast label for the in-flight save
+  const deleteFilesRef = useRefMain(false);
+  const flushAllDirtyRef = useRefMain(null);
+  const touchDocs = () => setDocsVersion(v => v + 1);
   const TWEAK_DEFAULTS = {
     accent_hue: 35,
     density: 'comfortable',
@@ -7440,6 +7479,29 @@ function App() {
     let cancelled = false;
     async function initStorage() {
       try {
+        const detected = await detectAppMode();
+        if (cancelled) return;
+        appModeRef.current = detected;
+        setAppMode(detected);
+        if (detected === 'multi') {
+          let multiReady = false;
+          try {
+            multiReady = await initMulti(() => cancelled);
+          } catch (e) {
+            showToast('Projects init failed: ' + e.message, 'err');
+          }
+          if (multiReady) {
+            if (!cancelled) setIsLoading(false);
+            return;
+          }
+          if (cancelled) return;
+          // Server stopped answering between probes — continue with the
+          // standalone detection chain below.
+          multiRef.current = null;
+          setSwitching(false);
+          appModeRef.current = 'standalone';
+          setAppMode('standalone');
+        }
         const mode = await Storage.detect();
         setStorageMode(mode);
         if (mode === 'local') {
@@ -7506,13 +7568,40 @@ function App() {
     return () => {
       cancelled = true;
       SyncPoller.stop();
+      const m = multiRef.current;
+      if (m) {
+        m.poller.stop();
+        for (const t of m.timers.values()) clearTimeout(t);
+        m.timers.clear();
+        multiRef.current = null;
+      }
     };
   }, []);
 
   // Persist expanded/collapsed row state and tweaks locally. Data itself lives in backlog.md.
+  // Multi mode keeps one such record per project; the bare LS_KEY stays standalone-only.
   useEffectMain(() => {
+    if (appModeRef.current === 'multi') {
+      if (activeProjectId) saveProjectLocalState(activeProjectId, latestExpandedMap.current, tweaks);
+      return;
+    }
     saveLocalState(latestExpandedMap.current, tweaks);
-  }, [expandedMap, tweaks]);
+  }, [expandedMap, tweaks, activeProjectId]);
+
+  // Multi mode: never lose a background tab's pending edits when the page
+  // hides or unloads — fire every dirty project's save immediately.
+  useEffectMain(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flushAllDirtyRef.current?.();
+    };
+    const onUnload = () => flushAllDirtyRef.current?.();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('beforeunload', onUnload);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('beforeunload', onUnload);
+    };
+  }, []);
   const showToast = (msg, kind = 'ok') => {
     setToast({
       msg,
@@ -7521,6 +7610,399 @@ function App() {
     });
     setTimeout(() => setToast(t => t && Date.now() - t.t >= 2400 ? null : t), 2500);
   };
+
+  // ---- Multi-project mode: per-project load/save/poll lifecycle ----
+  // Every project owns its doc record, its backend and its save timer; nothing
+  // is keyed by display name and no shared "latest" state is read at save time.
+
+  function getBackend(projectId) {
+    const m = multiRef.current;
+    if (!m) return createProjectBackend(projectId);
+    let b = m.backends.get(projectId);
+    if (!b) {
+      b = createProjectBackend(projectId);
+      m.backends.set(projectId, b);
+    }
+    return b;
+  }
+  function applyProjectLocalState(projectId) {
+    const st = loadProjectLocalState(projectId);
+    setExpandedMap(st?.expandedMap ?? {});
+    setTweak({
+      ...TWEAK_DEFAULTS,
+      ...(st?.tweaks ?? {})
+    });
+  }
+  async function loadDoc(projectId) {
+    const m = multiRef.current;
+    if (!m) return;
+    let doc = docsRef.current.get(projectId);
+    if (!doc) {
+      doc = {
+        data: null,
+        checksum: '',
+        dirty: false,
+        saving: false,
+        error: false,
+        conflict: false,
+        loaded: false,
+        savedAt: null
+      };
+      docsRef.current.set(projectId, doc);
+    }
+    if (doc.loaded) {
+      if (projectId === activeProjectIdRef.current && doc.data) setData(doc.data);
+      touchDocs();
+      return;
+    }
+    try {
+      const backend = getBackend(projectId);
+      const [raw, backups, sizeInfo] = await Promise.all([backend.load(), backend.listBackups(), backend.health()]);
+      const parsed = await Parser.parse(raw?.content || '');
+      const newData = await buildDataFromStorage(parsed, backups, 'api', sizeInfo);
+      doc.data = newData;
+      doc.checksum = raw?.checksum || '';
+      doc.loaded = true;
+      m.poller.setBaseline(projectId, doc.checksum);
+      if (!parsed.checksumOk && parsed.meta && projectId === activeProjectIdRef.current) setShowWarning(true);
+      if (projectId === activeProjectIdRef.current) {
+        setData(newData);
+        if (!loadProjectLocalState(projectId)?.expandedMap) {
+          const em = {};
+          walkTree(newData.entries, it => {
+            em[it.id] = !it.collapsed;
+          });
+          setExpandedMap(em);
+        }
+      }
+    } catch (e) {
+      if (projectId === activeProjectIdRef.current) showToast('Load failed: ' + e.message, 'err');
+    }
+    touchDocs();
+  }
+  async function initMulti(isCancelled) {
+    const api = new ProjectsApi();
+    let list;
+    try {
+      list = await api.list();
+    } catch {
+      return false;
+    }
+    if (isCancelled?.() || !list?.length) return false;
+    const poller = createProjectsPoller(handleExternalChange);
+    multiRef.current = {
+      api,
+      poller,
+      backends: new Map(),
+      timers: new Map()
+    };
+    setProjects(list);
+    const savedId = (() => {
+      try {
+        return localStorage.getItem(ACTIVE_PROJECT_KEY);
+      } catch {
+        return null;
+      }
+    })();
+    const fallback = list.find(p => p.default)?.id ?? list[0].id;
+    const active = list.some(p => p.id === savedId) ? savedId : fallback;
+    activeProjectIdRef.current = active;
+    setActiveProjectId(active);
+    try {
+      localStorage.setItem(ACTIVE_PROJECT_KEY, active);
+    } catch {/* private mode */}
+    applyProjectLocalState(active);
+    setSwitching(true);
+    await loadDoc(active);
+    setSwitching(false);
+    if (isCancelled?.()) return true;
+    setStorageMode('api');
+    poller.start();
+    return true;
+  }
+  async function switchTab(targetId) {
+    const m = multiRef.current;
+    if (!m || targetId === activeProjectIdRef.current) return;
+    saveProjectLocalState(activeProjectIdRef.current, latestExpandedMap.current, tweaks);
+    activeProjectIdRef.current = targetId;
+    setActiveProjectId(targetId);
+    try {
+      localStorage.setItem(ACTIVE_PROJECT_KEY, targetId);
+    } catch {/* private mode */}
+    applyProjectLocalState(targetId);
+    setArchiveData({
+      entries: [],
+      history: []
+    });
+    const doc = docsRef.current.get(targetId);
+    if (doc?.loaded) {
+      setData(doc.data);
+    } else {
+      setSwitching(true);
+      setData(buildEmptyData());
+      await loadDoc(targetId);
+      setSwitching(false);
+    }
+  }
+  function scheduleSave(projectId) {
+    const m = multiRef.current;
+    if (!m) return;
+    if (m.timers.has(projectId)) clearTimeout(m.timers.get(projectId));
+    m.timers.set(projectId, setTimeout(() => {
+      m.timers.delete(projectId);
+      saveDocNow(projectId);
+    }, 600));
+  }
+  async function saveDocNow(projectId) {
+    const m = multiRef.current;
+    if (!m) return;
+    const doc = docsRef.current.get(projectId);
+    if (!doc?.loaded || !doc.dirty || doc.saving) return;
+    doc.saving = true;
+    doc.error = false;
+    touchDocs();
+    try {
+      const backend = getBackend(projectId);
+      const content = await Parser.serialize({
+        entries: doc.data.entries,
+        history: doc.data.history
+      });
+      const res = await backend.save(content);
+      if (!res?.ok) throw new Error(res?.error || 'save failed');
+      doc.dirty = false;
+      doc.checksum = res.checksum || doc.checksum;
+      doc.conflict = false;
+      doc.savedAt = new Date().toISOString();
+      doc.data = {
+        ...doc.data,
+        health: {
+          ...doc.data.health,
+          lastSave: doc.savedAt
+        },
+        meta: {
+          ...doc.data.meta,
+          saved: res.saved || doc.savedAt
+        }
+      };
+      if (projectId === activeProjectIdRef.current) setData(doc.data);
+      m.poller.setBaseline(projectId, doc.checksum);
+      const label = pendingLabelsRef.current.get(projectId);
+      if (label) {
+        pendingLabelsRef.current.delete(projectId);
+        if (projectId === activeProjectIdRef.current) showToast(label);
+      }
+    } catch (e) {
+      doc.error = true;
+      if (projectId === activeProjectIdRef.current) showToast('Save failed: ' + e.message, 'err');
+    } finally {
+      doc.saving = false;
+      touchDocs();
+    }
+  }
+  function flushAllDirty() {
+    if (appModeRef.current !== 'multi') return;
+    const m = multiRef.current;
+    if (!m) return;
+    for (const [id, doc] of docsRef.current) {
+      if (!doc.loaded || !doc.dirty || doc.saving) continue;
+      if (m.timers.has(id)) {
+        clearTimeout(m.timers.get(id));
+        m.timers.delete(id);
+      }
+      saveDocNow(id);
+    }
+  }
+  flushAllDirtyRef.current = flushAllDirty;
+  function handleExternalChange({
+    projectId
+  }) {
+    const doc = docsRef.current.get(projectId);
+    if (!doc?.loaded) return;
+    doc.conflict = true;
+    touchDocs();
+    if (projectId === activeProjectIdRef.current) {
+      showToast(doc.dirty ? 'File changed externally — you have unsaved edits' : 'File changed externally', 'warn');
+    }
+  }
+  async function reloadDoc(projectId, {
+    skipConfirm = false
+  } = {}) {
+    const doc = docsRef.current.get(projectId);
+    if (!doc) return;
+    const doReload = async () => {
+      const m = multiRef.current;
+      if (!m) return;
+      try {
+        const backend = getBackend(projectId);
+        const [raw, backups, sizeInfo] = await Promise.all([backend.load(), backend.listBackups(), backend.health()]);
+        const parsed = await Parser.parse(raw?.content || '');
+        const newData = await buildDataFromStorage(parsed, backups, 'api', sizeInfo);
+        doc.data = newData;
+        doc.checksum = raw?.checksum || '';
+        doc.dirty = false;
+        doc.conflict = false;
+        doc.error = false;
+        doc.loaded = true;
+        doc.savedAt = null;
+        m.poller.setBaseline(projectId, doc.checksum);
+        if (projectId === activeProjectIdRef.current) {
+          setData(newData);
+          if (!loadProjectLocalState(projectId)?.expandedMap) {
+            const em = {};
+            walkTree(newData.entries, it => {
+              em[it.id] = !it.collapsed;
+            });
+            setExpandedMap(em);
+          }
+        }
+        touchDocs();
+        showToast('Reloaded from disk');
+      } catch (e) {
+        showToast('Reload failed: ' + e.message, 'err');
+      }
+    };
+    if (doc.dirty && !skipConfirm) {
+      setConfirm({
+        title: 'Reload from disk?',
+        danger: true,
+        message: /*#__PURE__*/React.createElement(React.Fragment, null, "This project changed on disk while you had unsaved edits."),
+        detail: /*#__PURE__*/React.createElement("span", {
+          className: "muted"
+        }, "Reloading discards your unsaved edits and takes the on-disk version."),
+        confirmLabel: 'Reload',
+        onConfirm: () => {
+          setConfirm(null);
+          doReload();
+        }
+      });
+    } else {
+      await doReload();
+    }
+  }
+  async function syncActiveBaseline() {
+    const m = multiRef.current;
+    if (!m) return;
+    const id = activeProjectIdRef.current;
+    const doc = docsRef.current.get(id);
+    if (!doc?.loaded) return;
+    try {
+      const raw = await getBackend(id).load();
+      doc.checksum = raw?.checksum || '';
+      doc.dirty = false;
+      doc.conflict = false;
+      m.poller.setBaseline(id, doc.checksum);
+      touchDocs();
+    } catch {/* keep previous baseline */}
+  }
+  function handleRenameProject(p) {
+    const input = window.prompt('Rename project:', p.name);
+    if (input == null) return;
+    const name = input.trim();
+    if (!name || name === p.name) return;
+    multiRef.current?.api.rename(p.id, name).then(() => setProjects(ps => ps.map(x => x.id === p.id ? {
+      ...x,
+      name
+    } : x))).catch(e => showToast('Rename failed: ' + e.message, 'err'));
+  }
+  function confirmRemoveProject(p) {
+    deleteFilesRef.current = false;
+    setConfirm({
+      title: 'Remove this project?',
+      danger: true,
+      message: /*#__PURE__*/React.createElement(React.Fragment, null, "Remove ", /*#__PURE__*/React.createElement("strong", null, p.name), " from the project list?"),
+      detail: /*#__PURE__*/React.createElement(RemoveProjectDetail, {
+        path: p.path,
+        onChange: v => {
+          deleteFilesRef.current = v;
+        }
+      }),
+      confirmLabel: 'Remove',
+      onConfirm: () => {
+        setConfirm(null);
+        doRemoveProject(p.id, deleteFilesRef.current, projects);
+      }
+    });
+  }
+  async function doRemoveProject(projectId, deleteFiles, projectsNow) {
+    const m = multiRef.current;
+    if (!m) return;
+    try {
+      await m.api.remove(projectId, deleteFiles);
+    } catch (e) {
+      showToast('Remove failed: ' + e.message, 'err');
+      return;
+    }
+    if (m.timers.has(projectId)) {
+      clearTimeout(m.timers.get(projectId));
+      m.timers.delete(projectId);
+    }
+    m.backends.delete(projectId);
+    docsRef.current.delete(projectId);
+    const remaining = projectsNow.filter(x => x.id !== projectId);
+    setProjects(remaining);
+    if (!remaining.length) return;
+    if (projectId === activeProjectIdRef.current) {
+      const next = remaining.find(x => x.default)?.id ?? remaining[0].id;
+      activeProjectIdRef.current = next;
+      setActiveProjectId(next);
+      try {
+        localStorage.setItem(ACTIVE_PROJECT_KEY, next);
+      } catch {/* private mode */}
+      applyProjectLocalState(next);
+      setArchiveData({
+        entries: [],
+        history: []
+      });
+      const doc = docsRef.current.get(next);
+      if (doc?.loaded) {
+        setData(doc.data);
+      } else {
+        setSwitching(true);
+        setData(buildEmptyData());
+        await loadDoc(next);
+        setSwitching(false);
+      }
+    }
+    showToast(deleteFiles ? 'Project removed — files deleted' : 'Project removed');
+  }
+  async function handleAddProject() {
+    const m = multiRef.current;
+    if (!m) return;
+    let prefill = '';
+    try {
+      const res = await m.api.pickFolder();
+      if (!res?.path) return;
+      prefill = res.path;
+    } catch {
+      // Picker unavailable (no desktop app handle) — fall back to a typed path.
+    }
+    setAddProject({
+      path: prefill,
+      name: ''
+    });
+  }
+  async function submitAddProject() {
+    const m = multiRef.current;
+    const path = addProject?.path?.trim();
+    if (!m || !path) return;
+    const name = addProject.name?.trim();
+    try {
+      const res = await m.api.register(path, name || null);
+      const p = res?.project;
+      if (!p?.id) throw new Error('no project in response');
+      setProjects(ps => [...ps, {
+        id: p.id,
+        name: p.name,
+        path: p.path,
+        default: false
+      }]);
+      setAddProject(null);
+      await switchTab(p.id);
+      showToast('Project added');
+    } catch (e) {
+      showToast('Add project failed: ' + e.message, 'err');
+    }
+  }
 
   // ---- Connect to backlog.md (user-triggered, called from the connect banner) ----
   const handleConnect = async () => {
@@ -7559,6 +8041,17 @@ function App() {
 
   // ---- Real async save ----
   const triggerSave = label => {
+    if (appModeRef.current === 'multi') {
+      const id = activeProjectIdRef.current;
+      const doc = docsRef.current.get(id);
+      if (doc?.loaded) {
+        doc.dirty = true;
+        touchDocs();
+      }
+      if (label) pendingLabelsRef.current.set(id, label);
+      scheduleSave(id);
+      return;
+    }
     isDirtyRef.current = true;
     setSaveState(prev => ({
       ...prev,
@@ -7608,12 +8101,21 @@ function App() {
     }, 600);
   };
   const mutate = fn => {
-    isDirtyRef.current = true;
-    setData(d => {
-      const c = structuredClone(d);
-      fn(c);
-      return c;
-    });
+    const c = structuredClone(latestData.current);
+    fn(c);
+    latestData.current = c;
+    setData(c);
+    if (appModeRef.current === 'multi') {
+      const doc = docsRef.current.get(activeProjectIdRef.current);
+      if (doc) {
+        doc.data = c;
+        doc.dirty = true;
+      }
+      touchDocs();
+      scheduleSave(activeProjectIdRef.current);
+    } else {
+      isDirtyRef.current = true;
+    }
   };
 
   // ---- Helpers ----
@@ -7925,7 +8427,15 @@ function App() {
       onConfirm: async () => {
         setConfirm(null);
         try {
-          if (Storage.isConnected()) {
+          if (appModeRef.current === 'multi') {
+            const id = activeProjectIdRef.current;
+            const backend = getBackend(id);
+            const result = await backend.restoreBackup(b.name);
+            if (!result.ok) throw new Error(result.error || 'Restore failed');
+            await reloadDoc(id, {
+              skipConfirm: true
+            });
+          } else if (Storage.isConnected()) {
             const result = await Storage.restoreBackup(b.name);
             if (!result.ok) throw new Error(result.error || 'Restore failed');
             const [raw, backups, sizeInfo] = await Promise.all([Storage.load(), Storage.listBackups(), Storage.getHealthInfo()]);
@@ -7965,7 +8475,7 @@ function App() {
   // ---- Archive functions ----
   const loadArchive = async () => {
     try {
-      const raw = await Storage.loadArchive();
+      const raw = appModeRef.current === 'multi' ? await getBackend(activeProjectIdRef.current).loadArchive() : await Storage.loadArchive();
       if (raw.exists && raw.content) {
         const parsed = await Parser.parse(raw.content);
         setArchiveData({
@@ -8029,20 +8539,32 @@ function App() {
       });
 
       // Save both atomically
-      const result = await Storage.saveArchive(backlogContent, archiveContent);
+      const result = appModeRef.current === 'multi' ? await getBackend(activeProjectIdRef.current).saveArchive(backlogContent, archiveContent) : await Storage.saveArchive(backlogContent, archiveContent);
       if (!result.ok) throw new Error('Archive failed');
 
       // Update local state
-      setData(d => ({
-        ...d,
-        entries: newEntries,
-        history: newHistory
-      }));
+      if (appModeRef.current === 'multi') {
+        const doc = docsRef.current.get(activeProjectIdRef.current);
+        const nd = {
+          ...latestData.current,
+          entries: newEntries,
+          history: newHistory
+        };
+        if (doc) doc.data = nd;
+        latestData.current = nd;
+        setData(nd);
+      } else {
+        setData(d => ({
+          ...d,
+          entries: newEntries,
+          history: newHistory
+        }));
+      }
       setArchiveData({
         entries: newArchiveEntries,
         history: archiveData.history
       });
-      isDirtyRef.current = false;
+      if (appModeRef.current === 'multi') await syncActiveBaseline();else isDirtyRef.current = false;
       showToast(`Archived ${toArchive.length} item${toArchive.length > 1 ? 's' : ''}`);
     } catch (e) {
       showToast('Archive failed: ' + e.message, 'err');
@@ -8099,20 +8621,32 @@ function App() {
       });
 
       // Save both atomically
-      const result = await Storage.restoreFromArchive(backlogContent, archiveContent);
+      const result = appModeRef.current === 'multi' ? await getBackend(activeProjectIdRef.current).restoreFromArchive(backlogContent, archiveContent) : await Storage.restoreFromArchive(backlogContent, archiveContent);
       if (!result.ok) throw new Error('Restore failed');
 
       // Update local state
-      setData(d => ({
-        ...d,
-        entries: newEntries,
-        history: newHistory
-      }));
+      if (appModeRef.current === 'multi') {
+        const doc = docsRef.current.get(activeProjectIdRef.current);
+        const nd = {
+          ...latestData.current,
+          entries: newEntries,
+          history: newHistory
+        };
+        if (doc) doc.data = nd;
+        latestData.current = nd;
+        setData(nd);
+      } else {
+        setData(d => ({
+          ...d,
+          entries: newEntries,
+          history: newHistory
+        }));
+      }
       setArchiveData({
         entries: remainingArchive,
         history: archiveData.history
       });
-      isDirtyRef.current = false;
+      if (appModeRef.current === 'multi') await syncActiveBaseline();else isDirtyRef.current = false;
       let msg = `Restored ${toRestore.length} item${toRestore.length > 1 ? 's' : ''}`;
       if (warnings.length) msg += ` (${warnings.length} to root - parent not found)`;
       showToast(msg);
@@ -8120,9 +8654,16 @@ function App() {
       showToast('Restore failed: ' + e.message, 'err');
     }
   };
-  const saveLabel = saveState.status === 'saving' ? 'Saving…' : saveState.status === 'error' ? 'Save failed' : `Saved · ${fmtTimestamp(saveState.lastSaved)}`;
+  const activeDoc = appMode === 'multi' && activeProjectId ? docsRef.current.get(activeProjectId) : null;
+  const multiSaveStatus = !activeDoc ? 'idle' : activeDoc.error ? 'error' : activeDoc.saving || activeDoc.dirty ? 'saving' : activeDoc.loaded ? 'saved' : 'idle';
+  const multiSaveLabel = !activeDoc ? '…' : activeDoc.saving || activeDoc.dirty ? 'Saving…' : activeDoc.error ? 'Save failed' : `Saved · ${fmtTimestamp(activeDoc.savedAt || activeDoc.data?.health?.lastSave || null)}`;
+  const headerSaveState = appMode === 'multi' ? {
+    status: multiSaveStatus,
+    lastSaved: activeDoc?.savedAt || activeDoc?.data?.health?.lastSave || null
+  } : saveState;
+  const saveLabel = appMode === 'multi' ? multiSaveLabel : saveState.status === 'saving' ? 'Saving…' : saveState.status === 'error' ? 'Save failed' : `Saved · ${fmtTimestamp(saveState.lastSaved)}`;
   const hasFilters = filters.text || filters.statuses?.length || filters.priorities?.length || filters.tags?.length || filters.dueRange;
-  if (isLoading) {
+  if (isLoading || switching) {
     return /*#__PURE__*/React.createElement("div", {
       className: "app",
       style: {
@@ -8145,7 +8686,7 @@ function App() {
       style: {
         fontSize: 13
       }
-    }, "Connecting to storage")));
+    }, switching && !isLoading ? 'Opening project' : 'Connecting to storage')));
   }
   return /*#__PURE__*/React.createElement("div", {
     className: "app"
@@ -8154,7 +8695,7 @@ function App() {
   }, /*#__PURE__*/React.createElement(Header, {
     view: view,
     setView: setView,
-    saveState: saveState,
+    saveState: headerSaveState,
     saveLabel: saveLabel,
     storageMode: storageMode,
     searchValue: filters.text,
@@ -8166,7 +8707,44 @@ function App() {
     onOpenImportExport: () => setImportExportOpen(true),
     theme: tweaks.theme,
     onSetTheme: t => setTweak('theme', t)
-  }), storageMode === 'local' && /*#__PURE__*/React.createElement("div", {
+  }), appMode === 'multi' && /*#__PURE__*/React.createElement(TabBar, {
+    projects: projects,
+    activeProjectId: activeProjectId,
+    getDocState: id => docsRef.current.get(id),
+    onSelect: switchTab,
+    onAdd: handleAddProject,
+    onTabMenu: (e, p) => {
+      e.preventDefault();
+      setTabMenu({
+        x: e.clientX,
+        y: e.clientY,
+        project: p
+      });
+    }
+  }), appMode === 'multi' && activeDoc?.conflict && /*#__PURE__*/React.createElement("div", {
+    className: "banner warn",
+    style: {
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "warn",
+    size: 14
+  }), /*#__PURE__*/React.createElement("span", null, activeDoc.dirty ? /*#__PURE__*/React.createElement(React.Fragment, null, "Changed on disk while you have unsaved edits \u2014 reloading discards them; your next save overwrites the file.") : /*#__PURE__*/React.createElement(React.Fragment, null, "This project changed on disk.")), /*#__PURE__*/React.createElement("button", {
+    className: "btn-primary",
+    style: {
+      marginLeft: 'auto',
+      flexShrink: 0,
+      fontSize: 12,
+      padding: '3px 10px'
+    },
+    onClick: () => reloadDoc(activeProjectId)
+  }, "Reload from disk"), /*#__PURE__*/React.createElement("button", {
+    className: "banner-close",
+    onClick: () => {
+      activeDoc.conflict = false;
+      touchDocs();
+    }
+  }, "dismiss")), storageMode === 'local' && /*#__PURE__*/React.createElement("div", {
     className: "banner warn",
     style: {
       gap: 8
@@ -8336,6 +8914,27 @@ function App() {
     storageMode: storageMode,
     onClose: () => setImportExportOpen(false),
     onImport: handleImport
+  }), appMode === 'multi' && /*#__PURE__*/React.createElement(AddProjectDialog, {
+    open: !!addProject,
+    path: addProject?.path || '',
+    name: addProject?.name || '',
+    onPath: v => setAddProject(ap => ({
+      path: v,
+      name: ap?.name || ''
+    })),
+    onName: v => setAddProject(ap => ({
+      path: ap?.path || '',
+      name: v
+    })),
+    onCancel: () => setAddProject(null),
+    onSubmit: submitAddProject
+  }), tabMenu && /*#__PURE__*/React.createElement(TabContextMenu, {
+    x: tabMenu.x,
+    y: tabMenu.y,
+    project: tabMenu.project,
+    onClose: () => setTabMenu(null),
+    onRename: handleRenameProject,
+    onRemove: confirmRemoveProject
   }), toast && /*#__PURE__*/React.createElement("div", {
     className: `toast ${toast.kind}`
   }, /*#__PURE__*/React.createElement(Icon, {
@@ -8450,6 +9049,230 @@ function App() {
       showToast('Sample data loaded');
     }
   })))));
+}
+
+// ----- Project tab bar (multi mode) -----
+function TabBar({
+  projects,
+  activeProjectId,
+  getDocState,
+  onSelect,
+  onAdd,
+  onTabMenu
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "tabs",
+    role: "tablist",
+    "aria-label": "Projects",
+    style: {
+      gap: 2,
+      padding: '6px 24px',
+      borderBottom: '1px solid var(--rule)',
+      alignItems: 'center',
+      overflowX: 'auto'
+    }
+  }, projects.map(p => {
+    const st = getDocState(p.id) || {};
+    const active = p.id === activeProjectId;
+    return /*#__PURE__*/React.createElement("button", {
+      key: p.id,
+      role: "tab",
+      "aria-selected": active,
+      className: `tab ptab ${active ? 'active' : ''}`,
+      "data-project-id": p.id,
+      "data-dirty": st.dirty ? 'true' : 'false',
+      "data-conflict": st.conflict ? 'true' : 'false',
+      title: p.path,
+      onClick: () => onSelect(p.id),
+      onContextMenu: e => onTabMenu(e, p)
+    }, /*#__PURE__*/React.createElement("span", null, p.name), st.dirty && /*#__PURE__*/React.createElement("span", {
+      style: {
+        marginLeft: 6,
+        fontSize: 9,
+        color: 'var(--accent)'
+      },
+      title: "Unsaved changes"
+    }, "\u25CF"), st.conflict && /*#__PURE__*/React.createElement("span", {
+      style: {
+        marginLeft: 4,
+        fontSize: 10,
+        color: '#b45309'
+      },
+      title: "Changed externally"
+    }, "\u26A0"));
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "tab ptab-add",
+    onClick: onAdd,
+    title: "Add project",
+    "aria-label": "Add project"
+  }, "+"));
+}
+function TabContextMenu({
+  x,
+  y,
+  project,
+  onClose,
+  onRename,
+  onRemove
+}) {
+  const ref = useRefMain(null);
+  const [pos, setPos] = useStateMain({
+    left: x,
+    top: y
+  });
+  useEffectMain(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const pad = 8;
+    let left = x,
+      top = y;
+    if (left + r.width > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - r.width - pad);
+    if (top + r.height > window.innerHeight - pad) top = Math.max(pad, window.innerHeight - r.height - pad);
+    setPos({
+      left,
+      top
+    });
+  }, [x, y]);
+  useEffectMain(() => {
+    const close = e => {
+      if (!ref.current?.contains(e.target)) onClose();
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [onClose]);
+  return ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
+    ref: ref,
+    role: "menu",
+    "aria-label": "Project actions",
+    style: {
+      position: 'fixed',
+      left: pos.left,
+      top: pos.top,
+      zIndex: 150,
+      display: 'flex',
+      flexDirection: 'column',
+      minWidth: 160,
+      background: 'var(--paper)',
+      border: '1px solid var(--rule)',
+      borderRadius: 'var(--radius)',
+      padding: 4,
+      boxShadow: '0 6px 24px oklch(0.22 0.012 60 / 0.18)'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    role: "menuitem",
+    style: tabMenuItemStyle,
+    onClick: () => {
+      onClose();
+      onRename(project);
+    }
+  }, "Rename\u2026"), /*#__PURE__*/React.createElement("button", {
+    role: "menuitem",
+    style: {
+      ...tabMenuItemStyle,
+      color: '#b3261e'
+    },
+    onClick: () => {
+      onClose();
+      onRemove(project);
+    }
+  }, "Remove\u2026")), document.body);
+}
+const tabMenuItemStyle = {
+  textAlign: 'left',
+  border: 0,
+  background: 'transparent',
+  padding: '7px 10px',
+  borderRadius: 'var(--radius)',
+  fontSize: 13,
+  color: 'var(--ink)',
+  cursor: 'pointer'
+};
+function RemoveProjectDetail({
+  path,
+  onChange
+}) {
+  const [deleteFiles, setDeleteFiles] = useStateMain(false);
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "mono small"
+  }, path), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: 'flex',
+      gap: 7,
+      alignItems: 'center',
+      marginTop: 8,
+      fontSize: 13,
+      cursor: 'pointer'
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: deleteFiles,
+    onChange: e => {
+      setDeleteFiles(e.target.checked);
+      onChange(e.target.checked);
+    }
+  }), "Also delete files on disk (backlog.md, archive.md, backups/)"));
+}
+function AddProjectDialog({
+  open,
+  path,
+  name,
+  onPath,
+  onName,
+  onCancel,
+  onSubmit
+}) {
+  return /*#__PURE__*/React.createElement(Dialog, {
+    open: open,
+    onClose: onCancel,
+    width: 480,
+    labelledBy: "dlg-addproj-title"
+  }, /*#__PURE__*/React.createElement(DialogHeader, {
+    id: "dlg-addproj-title",
+    eyebrow: "Projects",
+    title: "Add project",
+    onClose: onCancel
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-body"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "field-label"
+  }, "Path ", /*#__PURE__*/React.createElement("span", {
+    className: "field-hint"
+  }, "folder or backlog.md file")), /*#__PURE__*/React.createElement("input", {
+    className: "text-input",
+    value: path,
+    onChange: e => onPath(e.target.value),
+    placeholder: "/path/to/project (or /path/to/backlog.md)",
+    autoFocus: true
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "field-label"
+  }, "Name ", /*#__PURE__*/React.createElement("span", {
+    className: "field-hint"
+  }, "optional \u2014 defaults to the file name")), /*#__PURE__*/React.createElement("input", {
+    className: "text-input",
+    value: name,
+    onChange: e => onName(e.target.value),
+    placeholder: "Project name"
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-foot"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "dlg-hint"
+  }, "Registering a folder creates backlog.md there if missing."), /*#__PURE__*/React.createElement("div", {
+    className: "dlg-foot-actions"
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn-secondary",
+    onClick: onCancel
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn-primary",
+    onClick: onSubmit,
+    disabled: !path.trim()
+  }, "Add project"))));
 }
 
 // ----- View chips (saved searches) -----
