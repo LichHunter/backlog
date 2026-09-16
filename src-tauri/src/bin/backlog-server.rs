@@ -7,7 +7,7 @@ use std::process::exit;
 use std::sync::Arc;
 
 use backlog_app_lib::registry::Registry;
-use backlog_app_lib::{default_data_root, ensure_default_project, server};
+use backlog_app_lib::{bootstrap_registry, default_data_root, server};
 
 const USAGE: &str = "Usage: backlog-server [OPTIONS]
 
@@ -87,7 +87,10 @@ fn main() {
 
     let registry = Arc::new(Registry::with_path(projects_file));
     registry.load_or_default();
-    ensure_default_project(&registry, &root);
+    // No legacy dirs for the bin: it may run from anywhere (repo checkout,
+    // PATH, CI) and must never scan whatever happens to sit next to its
+    // binary — only the explicit data root (root + root/data) is scanned.
+    bootstrap_registry(&registry, &root, &[]);
 
     let (addr, accept_loop) = match server::bind_and_spawn(registry, frontend, Some(port)) {
         Ok(bound) => bound,
