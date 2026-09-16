@@ -1,8 +1,9 @@
-//! Legacy HTTP handlers, byte-compatible with the pre-registry behavior.
+//! Shared HTTP handlers for the legacy unscoped routes and the
+//! project-scoped surface (`/api/projects/{id}/...`).
 //!
-//! Every handler resolves its paths from the registry's default project
-//! (backlog file, sibling `archive.md`, sibling `backups/`) — the retired
-//! `AppState::data_dir` concept.
+//! Every handler is a pure fn over the resolved `&Project` (backlog file,
+//! sibling `archive.md`, sibling `backups/`) — the routing layer decides
+//! which project that is.
 
 use crate::registry::{Project, DEFAULT_BACKLOG_SKELETON};
 use chrono::Utc;
@@ -12,17 +13,23 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use tiny_http::{Header, Response};
 
-fn compute_checksum(content: &str) -> String {
+pub(super) fn compute_checksum(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     format!("sha256:{}", hex::encode(&hasher.finalize()[..12]))
 }
 
 pub(super) fn json_response(body: &str) -> Response<Cursor<Vec<u8>>> {
-    let data = body.as_bytes().to_vec();
-    Response::from_data(data)
+    json_response_with_status(body, 200)
+}
+
+/// JSON response with an explicit status; the body shape matches
+/// `json_response` byte-for-byte (same Content-Type, no CORS headers — the
+/// webview is same-origin).
+pub(super) fn json_response_with_status(body: &str, status: u16) -> Response<Cursor<Vec<u8>>> {
+    Response::from_data(body.as_bytes().to_vec())
+        .with_status_code(status)
         .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
 }
 
 fn backlog_path(project: Option<&Project>) -> Option<PathBuf> {

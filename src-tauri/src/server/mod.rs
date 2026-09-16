@@ -1,24 +1,27 @@
 //! HTTP harness: bind-with-retry, readiness-by-return, and the single
-//! routing point for all legacy API routes.
+//! routing point dispatching between the project-scoped API and the legacy
+//! unscoped aliases.
 //!
 //! `bind_and_spawn` returns `Ok` only after the socket is bound, so callers
 //! need no sleep-and-hope wait; the accept loop then runs forever in the
 //! spawned thread. Bind failures are surfaced as `Err` — silent death is
 //! forbidden.
 
-use std::io;
+use std::io::{self, Cursor};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use tiny_http::{Header, ListenAddr, Method, Request, Response, Server};
 
-use crate::registry::Registry;
+use crate::registry::{Project, Registry};
 
+mod api;
 mod handlers;
 use handlers::{
     handle_health, handle_list_backups, handle_load_archive, handle_load_backlog,
-    handle_restore_backup, handle_save_archive, handle_save_backlog, json_response, serve_static,
+    handle_restore_backup, handle_save_archive, handle_save_backlog, json_response,
+    json_response_with_status, serve_static,
 };
 
 /// OS-assigned (port 0) binds are attempted this many times before giving up.
@@ -75,38 +78,76 @@ fn serve_requests(server: Server, registry: Arc<Registry>, frontend_dir: PathBuf
         let url = request.url().to_string();
         let method = request.method().clone();
 
-        // CORS preflight
+        // Same-origin hardening: the server is loopback-only; anything that
+        // arrives with a non-loopback Host (DNS-rebinding probes) is refused
+        // before any routing or filesystem work.
+        if !host_is_loopback(&request) {
+            let _ = request.respond(json_response_with_status(
+                r#"{"error":"forbidden host"}"#,
+                403,
+            ));
+            continue;
+        }
+
+        // CORS preflight; the webview is same-origin, so no ACAO is emitted
         if method == Method::Options {
             let response = Response::empty(200)
-                .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
-                .with_header(Header::from_bytes("Access-Control-Allow-Methods", "GET, POST, OPTIONS").unwrap())
+                .with_header(Header::from_bytes("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS").unwrap())
                 .with_header(Header::from_bytes("Access-Control-Allow-Headers", "Content-Type").unwrap());
             let _ = request.respond(response);
             continue;
         }
 
-        let project = registry.default();
-        let response = match (method, url.as_str()) {
-            (Method::Get, "/api/health") => handle_health(project.as_deref()),
-            (Method::Get, "/api/backlog") => handle_load_backlog(project.as_deref()),
-            (Method::Post, "/api/backlog") => {
-                let body = read_body(&mut request);
-                handle_save_backlog(project.as_deref(), &body)
-            }
-            (Method::Get, "/api/backups") => handle_list_backups(project.as_deref()),
-            (Method::Post, "/api/backups/restore") => {
-                let body = read_body(&mut request);
-                handle_restore_backup(project.as_deref(), &body)
-            }
-            (Method::Get, "/api/archive") => handle_load_archive(project.as_deref()),
-            (Method::Post, "/api/archive") | (Method::Post, "/api/archive/restore") => {
-                let body = read_body(&mut request);
-                handle_save_archive(project.as_deref(), &body)
-            }
-            (Method::Get, path) => serve_static(&frontend_dir, path),
-            _ => json_response(r#"{"error": "Not found"}"#),
+        let (path, query) = match url.split_once('?') {
+            Some((path, query)) => (path, query),
+            None => (url.as_str(), ""),
         };
 
+        let response = match api::route(&registry, &method, path, query, &mut request) {
+            Some(response) => response,
+            None => legacy_route(&registry, &frontend_dir, &method, path, &mut request),
+        };
         let _ = request.respond(response);
+    }
+}
+
+fn host_is_loopback(request: &Request) -> bool {
+    request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Host"))
+        .is_some_and(|header| header.value.as_str().trim().starts_with("127.0.0.1"))
+}
+
+/// ONE legacy shim: every unscoped /api route resolves the registry's
+/// default project through here — no call site does its own resolution.
+fn resolve_legacy(registry: &Registry) -> Option<Arc<Project>> {
+    registry.default()
+}
+
+fn legacy_route(
+    registry: &Registry,
+    frontend_dir: &Path,
+    method: &Method,
+    path: &str,
+    request: &mut Request,
+) -> Response<Cursor<Vec<u8>>> {
+    let project = resolve_legacy(registry);
+    match (method, path) {
+        (Method::Get, "/api/health") => handle_health(project.as_deref()),
+        (Method::Get, "/api/backlog") => handle_load_backlog(project.as_deref()),
+        (Method::Post, "/api/backlog") => {
+            handle_save_backlog(project.as_deref(), &read_body(request))
+        }
+        (Method::Get, "/api/backups") => handle_list_backups(project.as_deref()),
+        (Method::Post, "/api/backups/restore") => {
+            handle_restore_backup(project.as_deref(), &read_body(request))
+        }
+        (Method::Get, "/api/archive") => handle_load_archive(project.as_deref()),
+        (Method::Post, "/api/archive") | (Method::Post, "/api/archive/restore") => {
+            handle_save_archive(project.as_deref(), &read_body(request))
+        }
+        (Method::Get, path) => serve_static(frontend_dir, path),
+        _ => json_response(r#"{"error": "Not found"}"#),
     }
 }
