@@ -6,7 +6,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "build:ui": "cd web && npm install && node bundle.js index.html ../src/index.html"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

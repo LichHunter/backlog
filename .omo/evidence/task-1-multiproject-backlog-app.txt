@@ -1,0 +1,49 @@
+=== BASELINE CHARACTERIZATION ===
+date: 2026-09-16
+node: v22.23.2 (devenv shell -- node -e "console.log(process.version)")
+src/index.html sha256 (pre-change): f387723cdb8b3eb2774db297b40f13a582e08344874c5af4956e03d163f7e053
+grep -c unpkg.com src/index.html -> 0
+grep -c cdn.jsdelivr src/index.html -> 0
+grep -c fonts.googleapis src/index.html -> 0
+baseline copy: .omo/evidence/task-1-baseline-index.html
+
+=== IMPLEMENTATION ===
+Vendored 14 files from upstream/main:web/ -> web/ (13 per plan + filter-panel.jsx, which index.html loads and the baseline contains compiled).
+web/index.html: removed 3 Google-Fonts <link> lines (fonts.googleapis.com preconnect x2 + stylesheet).
+web/vendor/: react@18.3.1 + react-dom@18.3.1 production UMDs (verified "/** @license React" headers):
+  react.production.min.js      sha256 d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd
+  react-dom.production.min.js  sha256 35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d
+web/bundle.js patches: @babel missing -> exit 1; compile error -> exit 1; missing local dep (jsx/css/vendor) -> exit 1;
+  prod UMDs read from web/vendor/ (no network, no dev-CDN fallback); strips src attr on inlined scripts (baseline has 0 <script src=);
+  post-bundle scan for unpkg.com|cdn.jsdelivr -> exit 1 BEFORE writing output.
+web/styles.css lines 32-33: font stacks reconciled to baseline (upstream used Google-Fonts "Inter"/"JetBrains Mono"; shipped app uses system stacks) - the ONLY semantic delta found, required by plan step 8.
+package.json: added "build:ui": "cd web && npm install && node bundle.js index.html ../src/index.html".
+src-tauri/tauri.conf.json: beforeBuildCommand + beforeDevCommand = "npm run build:ui".
+
+=== BUILD RESULTS ===
+devenv shell -- npm run build:ui (run 1, includes npm install 47 pkgs) -> exit 0
+devenv shell -- npm run build:ui (run 2, idempotency) -> exit 0, sha256 equal across runs: f387723cdb8b3eb2774db297b40f13a582e08344874c5af4956e03d163f7e053
+diff .omo/evidence/task-1-baseline-index.html src/index.html -> EMPTY (byte-identical after font-stack reconciliation)
+rm src/index.html && rebuild -> exit 0, sha256 reproduced (proves real rewrite, not stale state)
+mtime changes every run while sha stays constant (real rewrite + determinism)
+
+=== ACCEPTANCE ===
+grep -c unpkg.com src/index.html -> 0
+grep -c cdn.jsdelivr src/index.html -> 0
+grep -c fonts.googleapis src/index.html -> 0
+grep -c '<script src=' src/index.html -> 0
+node --check web/bundle.js -> OK
+
+=== ADVERSARIAL: sabotage ===
+A) mv web/node_modules /tmp/opencode/t1-nm-bak; npm run build:ui (online, warm npm cache) -> exit 0:
+   npm install legitimately RESTORED deps; JSX compiled; CDN scan passed. No degradation path taken (correct behavior with network).
+B) node_modules absent; cd web && node bundle.js index.html ../src/index.html -> exit 1:
+   "@babel/core / @babel/preset-react not available ... Refusing to emit uncompiled JSX."
+C) offline cold-cache npm install (npm_config_offline=true, empty cache) -> exit 1 (ENOTCACHED):
+   proves mv-node_modules sabotage is fatal in the offline env the check assumes.
+D) mv web/vendor/react.production.min.js away (node_modules present) -> exit 1:
+   "missing local dependency: vendor/react.production.min.js ... refusing to emit a broken bundle"
+All sabotaged state restored; final sanity build exit 0; src/index.html sha256 = f387723c... (unmodified by sabotage runs).
+
+=== ADVERSARIAL: hung commands ===
+npm install first run ~1s (47 packages), no hang; all builds < 5s wall.

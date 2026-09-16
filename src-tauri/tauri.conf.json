@@ -5,8 +5,8 @@
   "identifier": "app.backlog.desktop",
   "build": {
     "frontendDist": "../src",
-    "beforeDevCommand": "",
-    "beforeBuildCommand": ""
+    "beforeDevCommand": "npm run build:ui",
+    "beforeBuildCommand": "npm run build:ui"
   },
   "app": {
     "withGlobalTauri": true,
