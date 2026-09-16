@@ -14,6 +14,10 @@ crate-type = ["lib", "cdylib", "staticlib"]
 name = "backlog-app"
 path = "src/main.rs"
 
+[[bin]]
+name = "backlog-server"
+path = "src/bin/backlog-server.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -31,7 +35,6 @@ hex = "0.4"
 parking_lot = "0.12"
 log = "0.4"
 env_logger = "0.11"
-portpicker = "0.1"
 tiny_http = "0.12"
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }

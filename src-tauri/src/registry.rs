@@ -20,7 +20,7 @@ const RENAME_ATTEMPTS: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Default backlog.md content, byte-identical to the server's skeleton.
-const DEFAULT_BACKLOG_SKELETON: &str = "# Backlog\n\n<!-- SECTION: ENTRIES -->\n\n<!-- SECTION: HISTORY -->\n\n| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|--------|\n\n<!-- SECTION: INTEGRITY -->\n\n<!-- saved: | checksum: | entries: 0 | history: 0 -->\n";
+pub const DEFAULT_BACKLOG_SKELETON: &str = "# Backlog\n\n<!-- SECTION: ENTRIES -->\n\n<!-- SECTION: HISTORY -->\n\n| Timestamp | Item ID | Action | Details |\n|-----------|---------|--------|--------|\n\n<!-- SECTION: INTEGRITY -->\n\n<!-- saved: | checksum: | entries: 0 | history: 0 -->\n";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Project {
