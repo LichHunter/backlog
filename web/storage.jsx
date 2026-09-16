@@ -1,4 +1,5 @@
-// Storage layer: Parser, ApiBackend, DirectBackend, Storage detection, SyncPoller.
+// Storage layer: Parser, ApiBackend, DirectBackend, Storage detection, SyncPoller,
+// plus the multi-project layer (ProjectsApi, ProjectApiBackend, ProjectsPoller).
 // Compatible with web/index.html and server/server.py file format.
 //
 // File format (backlog.md):
@@ -714,6 +715,194 @@ const SyncPoller = {
   },
 };
 
+// ---- Multi-project storage layer (project-scoped REST) ----
+// Used when detectAppMode() returns 'multi'; the single-project backends
+// above remain for standalone mode.
+class ProjectsApi {
+  async _request(url, options = {}) {
+    const r = await fetch(url, options);
+    if (!r.ok) {
+      let message = 'HTTP ' + r.status;
+      try {
+        const j = await r.json();
+        if (j?.error) message = j.error;
+      } catch { /* non-JSON error body */ }
+      throw new Error(message);
+    }
+    return r.json();
+  }
+
+  async list() {
+    const j = await this._request('/api/projects');
+    return j.projects || [];
+  }
+
+  register(path, name) {
+    const body = { path };
+    if (name) body.name = name;
+    return this._request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  rename(id, name) {
+    return this._request('/api/projects/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  remove(id, deleteFiles) {
+    const url = '/api/projects/' + encodeURIComponent(id)
+      + (deleteFiles ? '?delete_files=true' : '');
+    return this._request(url, { method: 'DELETE' });
+  }
+
+  pickFolder() {
+    return this._request('/api/pick-folder', { method: 'POST' });
+  }
+}
+
+// Per-project backend: same method contract the app consumes, with every
+// URL scoped to /api/projects/{id}/...
+class ProjectApiBackend {
+  constructor(projectId) {
+    this.projectId = projectId;
+  }
+
+  _url(action) {
+    return '/api/projects/' + encodeURIComponent(this.projectId) + (action ? '/' + action : '');
+  }
+
+  async health() {
+    try {
+      const r = await fetch(this._url('health'));
+      if (!r.ok) return {};
+      const j = await r.json();
+      return {
+        masterSize: j.masterSize || 0,
+        statsSize: 0,
+        masterPath: j.masterPath || '',
+        backupsPath: j.backupsPath || '',
+        archiveExists: j.archiveExists || false,
+        archiveSize: j.archiveSize || 0,
+        archivePath: j.archivePath || '',
+      };
+    } catch { return {}; }
+  }
+
+  async load() {
+    const r = await fetch(this._url('backlog'));
+    if (!r.ok) throw new Error('API load failed: ' + r.status);
+    return r.json(); // { content, checksum }
+  }
+
+  async save(content) {
+    const r = await fetch(this._url('backlog'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!r.ok) throw new Error('API save failed: ' + r.status);
+    return r.json(); // { ok, checksum, saved }
+  }
+
+  async listBackups() {
+    try {
+      const r = await fetch(this._url('backups'));
+      if (!r.ok) return [];
+      return (await r.json()).backups || [];
+    } catch { return []; }
+  }
+
+  async restoreBackup(name) {
+    const r = await fetch(this._url('backups/restore'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    return r.ok ? r.json() : { ok: false };
+  }
+
+  async loadArchive() {
+    const r = await fetch(this._url('archive'));
+    if (!r.ok) throw new Error('API archive load failed: ' + r.status);
+    return r.json(); // { content, checksum, exists }
+  }
+
+  async saveArchive(backlogContent, archiveContent) {
+    const r = await fetch(this._url('archive'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backlog: backlogContent, archive: archiveContent }),
+    });
+    if (!r.ok) throw new Error('API archive save failed: ' + r.status);
+    return r.json();
+  }
+
+  async restoreFromArchive(backlogContent, archiveContent) {
+    const r = await fetch(this._url('archive/restore'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backlog: backlogContent, archive: archiveContent }),
+    });
+    if (!r.ok) throw new Error('API archive restore failed: ' + r.status);
+    return r.json();
+  }
+}
+
+function createProjectBackend(projectId) {
+  return new ProjectApiBackend(projectId);
+}
+
+// One interval, one GET /api/projects per tick. Baselines are the
+// server-side 24-hex checksums from each project's last load-or-save
+// response — never the 64-hex marker checksum (different scheme). A change
+// fires once, not on every tick, via the `emitted` map.
+function createProjectsPoller(onExternalChange) {
+  const baselines = new Map(); // projectId → checksum at last local load/save
+  const emitted   = new Map(); // projectId → last server checksum announced
+  let timer = null;
+
+  async function tick() {
+    let projects;
+    try {
+      const r = await fetch('/api/projects');
+      if (!r.ok) return;
+      projects = (await r.json()).projects || [];
+    } catch { /* silent on poll errors */ }
+    for (const p of projects || []) {
+      const baseline = baselines.get(p.id);
+      if (baseline === undefined || p.checksum == null) continue;
+      if (p.checksum === baseline) { emitted.delete(p.id); continue; }
+      if (p.checksum === emitted.get(p.id)) continue;
+      emitted.set(p.id, p.checksum);
+      onExternalChange?.({ projectId: p.id, checksum: p.checksum });
+    }
+  }
+
+  return {
+    setBaseline(projectId, checksum) { baselines.set(projectId, checksum); },
+    start() { if (!timer) timer = setInterval(tick, 5000); },
+    stop()  { if (timer) { clearInterval(timer); timer = null; } },
+  };
+}
+
+// 'multi' = the app server is answering; anything else → standalone.
+async function detectAppMode() {
+  if (typeof location !== 'undefined' && location.protocol === 'file:') return 'standalone';
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 1500);
+  try {
+    const r = await fetch('/api/health', { signal: ctrl.signal });
+    clearTimeout(t);
+    return r.ok ? 'multi' : 'standalone';
+  } catch { clearTimeout(t); return 'standalone'; }
+}
+
 // ---- buildDataFromStorage — assemble the full App data object from parsed content ----
 async function buildDataFromStorage(parsed, backups, storageMode, sizeInfo = {}) {
   const { entries, history, meta, checksumOk } = parsed;
@@ -823,5 +1012,10 @@ Object.assign(window, {
   BrowserStorageBackend,
   Storage,
   SyncPoller,
+  ProjectsApi,
+  ProjectApiBackend,
+  createProjectBackend,
+  createProjectsPoller,
+  detectAppMode,
   buildDataFromStorage,
 });
